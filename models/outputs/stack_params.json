@@ -1,0 +1,5 @@
+{
+  "threshold": 0.36999999999999994,
+  "tune_metric": "accuracy",
+  "oof_score": 0.7654723127035831
+}

@@ -1,0 +1,103 @@
+# With cropping (Mask-RCNN + centre-fallback)
+python run_pipeline.py --input_dir data/raw/images --output_dir data/processed/images --model_path models/segmenter/mask_rcnn_molar.pt
+
+# Or without any crop (deskew + centre-resize only)
+python run_pipeline.py --input_dir data/raw/images --output_dir data/processed_nocrop --model_path models/segmenter/mask_rcnn_molar.pt --no_crop
+
+
+# Crop ON, Rotation ON (default)
+python .\run_pipeline.py --input_dir .\data\raw\images --output_dir .\data\processed\images --model_path .\models\segmenter\mask_rcnn_molar.pt
+# Crop OFF, Rotation ON
+python .\run_pipeline.py --input_dir .\data\raw\images --output_dir .\data\processed_nocrop --model_path .\models\segmenter\mask_rcnn_molar.pt --no_crop
+# Crop ON, Rotation OFF
+python .\run_pipeline.py --input_dir .\data\raw\images --output_dir .\data\processed_norotate --model_path .\models\segmenter\mask_rcnn_molar.pt --no_rotate
+# Crop OFF, Rotation OFF
+python .\run_pipeline.py --input_dir .\data\raw\images --output_dir .\data\processed_nocrop_norotate --model_path .\models\segmenter\mask_rcnn_molar.pt --no_crop --no_rotate
+
+
+# Data Augmentation
+# Simple Augmentation
+python .\run_augment_simple.py --input_dir .\data\processed\images --output_dir .\data\augmented --multiplier 10 --size 512 --strength medium
+
+# If you want to copy the originals add this flag
+--copy_originals
+# If you want with no blur add this flag
+--no_blur
+
+# train XGBoost (uses data\excel\data_processed.csv and respects the 'split' column if present)
+python models/xgboost_model.py
+
+# train LightGBM
+python models/lightgbm_model.py
+
+# XGBoost (evaluates models/outputs/xgb_classifier_pipeline.joblib)
+python tests/evaluate_models.py --model xgb
+
+# LightGBM (evaluates models/outputs/lgbm_regressor_pipeline.joblib)
+python tests/evaluate_models.py --model lgbm
+
+# (optional) evaluate both if both files exist
+python tests/evaluate_models.py --model both
+
+# optional knobs
+python tests/evaluate_models.py --model xgb --threshold 0.5 --data data/excel/data_processed.csv --outdir models/outputs
+
+
+
+
+# Platt calibration + threshold tuned for balanced accuracy (default)
+python models/xgboost_model.py
+
+# Prefer higher precision? Tune with F1 and slightly harder weights
+python models/xgboost_model.py --calibration sigmoid --tune-metric f1     // best results
+
+# If monotone constraints hurt, disable them
+python models/xgboost_model.py --no-monotone
+
+
+# Train calibrated, monotone-constrained LGBM (good default)
+python models/lightgbm_model.py
+
+# Softer weights, no monotone, no calibration (for comparison)
+python models/lightgbm_model.py --consensus-power 0.5 --no-monotone --calibration none   // best results
+
+
+# (After retraining XGB + LGBM with the updated files)
+python tests/evaluate_models.py --model blend --blend-alpha 0.5
+
+# or bias toward the better single model:
+python tests/evaluate_models.py --model blend --blend-alpha 0.6   // If XGB is stronger on positives
+
+# or bias toward the better single model:
+python tests/evaluate_models.py --model blend --blend-alpha 0.4 // if LGBM is stronger overall
+
+
+# 1/ Tune ONLY the blend threshold on the train split (keeping alpha=0.5)
+python tests/evaluate_models.py --model blend --tune threshold --blend-alpha 0.5
+
+# 2/ Tune alpha AND threshold jointly on the train split (recommended)
+python tests/evaluate_models.py --model blend --tune both --tune-metric f1
+
+# 3/ Fix alpha but override threshold manually
+python tests/evaluate_models.py --model blend --blend-alpha 0.6 --threshold 0.3 --tune none
+
+
+
+
+
+
+## Note:
+#In a clinical workflow, missing an “indirect”
+(i.e., saying direct when indirect is needed) is usually the more costly error, so higher recall is desirable.
+
+
+
+
+#Updates with remove noises / min-weight = 0.15
+
+#python models/xgboost_model.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6 --no-monotone
+#python models/xgboost_model.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6 --no-monotone
+
+
+# Stack Blend
+python models/stack_blend.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6

@@ -1,0 +1,5 @@
+{
+  "threshold": 0.245,
+  "metric": "f1",
+  "metric_val": 0.7835051546391752
+}
