@@ -1,7 +1,7 @@
 {
-  "alpha": 0.15000000000000002,
-  "threshold": 0.36499999999999994,
-  "metric": "accuracy",
-  "mode": "both",
-  "train_score": 0.7543859649122807
+  "alpha": 0.6,
+  "threshold": 0.3,
+  "metric": "f1",
+  "mode": "none",
+  "train_score": null
 }
