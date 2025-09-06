@@ -16,13 +16,32 @@ python .\run_pipeline.py --input_dir .\data\raw\images --output_dir .\data\proce
 
 
 # Data Augmentation
-# Simple Augmentation
-python .\run_augment_simple.py --input_dir .\data\processed\images --output_dir .\data\augmented --multiplier 10 --size 512 --strength medium
 
-# If you want to copy the originals add this flag
---copy_originals
-# If you want with no blur add this flag
---no_blur
+## one-line command (recommended random legacy augmentation)
+python run_augment_records.py --input-table data/excel/data_dl.xlsx --images-src data/processed/images --images-dst data/augmented --num-aug-per-image 10 --make-val --val-frac 0.12 --aug-preset legacy --out-csv data/excel/data_dl_augmented.csv --out-xlsx data/excel/data_dl_augmented.xlsx
+
+## Exact 10 methods, grouped validation, with motion blur:
+python run_augment_records.py --input-table data/excel/data_dl.xlsx --images-src data/processed/images --images-dst data/augmented --num-aug-per-image 10 --make-val --val-frac 0.12 --aug-preset ten --out-csv data/excel/data_dl_augmented.csv --out-xlsx data/excel/data_dl_augmented.xlsx
+
+## Same but disabling motion blur (method #9 uses a light Gaussian blur substitute):
+python run_augment_records.py --input-table data/excel/data_dl.xlsx --images-src data/processed/images --images-dst data/augmented --num-aug-per-image 10 --make-val --val-frac 0.12 --aug-preset ten --no-blur --out-csv data/excel/data_dl_augmented.csv --out-xlsx data/excel/data_dl_augmented.xlsx
+
+## legacy (strong, albumentations – recommended if installed)
+python run_augment_records.py --input-table data/excel/data_dl.xlsx --images-src data/processed/images --images-dst data/augmented --num-aug-per-image 10 --make-val --val-frac 0.12 --aug-preset legacy --out-csv data/excel/data_dl_augmented.csv --out-xlsx data/excel/data_dl_augmented.xlsx
+
+## simple (lighter, only PIL transforms: flips, small rotations, blur/sharpness, jitter)
+python run_augment_records.py --input-table data/excel/data_dl.xlsx --images-src data/processed/images --images-dst data/augmented --num-aug-per-image 10 --make-val --val-frac 0.12 --aug-preset simple --out-csv data/excel/data_dl_augmented.csv --out-xlsx data/excel/data_dl_augmented.xlsx
+
+## none (no new transformations, just copy originals + group-safe split creation)
+python run_augment_records.py --input-table data/excel/data_dl.xlsx --images-src data/processed/images --images-dst data/augmented --num-aug-per-image 0 --make-val --val-frac 0.12 --aug-preset none --out-csv data/excel/data_dl_augmented.csv --out-xlsx data/excel/data_dl_augmented.xlsx
+
+#### Other Options
+Use --aug-preset ten to generate exactly 10 children per original (1 per method, in a fixed order).
+--no-blur disables Motion Blur (method 9) and substitutes a very light Gaussian blur so you still get 10
+
+### After Updates Groupd Val
+python -m src.preprocessing.augment_records --input-table data/excel/data_dl.xlsx --images-src data/processed/images --images-dst data/augmented --num-aug-per-image 10 --make-val --val-frac 0.12 --out-csv data/excel/data_dl_augmented.csv --out-xlsx data/excel/data_dl_augmented.xlsx
+
 
 ## 10 Methods of Data Augmentation were:
 1. Horizontal flip
@@ -125,9 +144,16 @@ python models/stack_blend.py --tune-metric accuracy --min-weight 0.15 --consensu
 ## Hard labels (Direct vs Indirect):
 python run_train_images.py --task hard --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42
 
+python models/vision/train_hard.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42 --group-col origin_id
+
+## Enable grouped split, TTA, and threshold tuning:
+python models/vision/train_hard.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42 --group-col origin_id --tta --tune-threshold
 
 ## Soft labels (probability of Indirect):
 python run_train_images.py --task soft --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name convnext_tiny --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42
+
+python models/vision/train_soft.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name convnext_tiny --img-size 512 --epochs 20 --batch-size 12
+
 
 ## Train both (chain on one line):
 python run_train_images.py --task hard --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42 && python run_train_images.py --task soft --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name convnext_tiny --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42

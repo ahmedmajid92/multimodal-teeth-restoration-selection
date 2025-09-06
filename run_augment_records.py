@@ -1,41 +1,41 @@
-#!/usr/bin/env python3
+# run_augment_records.py
+"""
+Convenience runner that stays compatible with the old API.
+It simply forwards CLI args to src.preprocessing.augment_records.augment_records().
+"""
+
 import argparse
-from pathlib import Path
-from src.preprocessing.augment_records import augment_with_records
+from src.preprocessing.augment_records import augment_records
 
 def main():
-    ap = argparse.ArgumentParser(description="Augment images + append spreadsheet records")
-    ap.add_argument("--input_dir", required=True, type=Path,
-                    help="Folder with source images (e.g., .\\data\\processed\\images)")
-    ap.add_argument("--output_dir", required=True, type=Path,
-                    help="Folder to save augmented images (e.g., .\\data\\augmented)")
-    ap.add_argument("--excel_in", required=True, type=Path,
-                    help="Path to the existing Excel file (e.g., .\\data\\excel\\data_dl.xlsx)")
-    ap.add_argument("--excel_out", required=True, type=Path,
-                    help="Path to write the NEW Excel (e.g., .\\data\\excel\\data_dl_augmented.xlsx)")
-    ap.add_argument("--csv_out", required=True, type=Path,
-                    help="Path to write the NEW CSV (e.g., .\\data\\excel\\data_dl_augmented.csv)")
-    ap.add_argument("--multiplier", type=int, default=10,
-                    help="How many new images per source (default 10)")
-    ap.add_argument("--size", type=int, default=512,
-                    help="Output image size (square). Default 512")
-    ap.add_argument("--strength", type=str, choices=["light", "medium", "strong"], default="medium",
-                    help="Augmentation intensity (default 'medium')")
-    ap.add_argument("--no_blur", action="store_true", help="Disable motion blur")
-    ap.add_argument("--seed", type=int, default=42, help="Random seed")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input-table", default="data/excel/data_dl.xlsx")
+    ap.add_argument("--images-src", default="data/processed/images")
+    ap.add_argument("--images-dst", default="data/augmented")
+    ap.add_argument("--num-aug-per-image", type=int, default=10)
+    ap.add_argument("--start-id", type=int, default=None)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--make-val", action="store_true")
+    ap.add_argument("--val-frac", type=float, default=0.12)
+    ap.add_argument("--out-csv", default="data/excel/data_dl_augmented.csv")
+    ap.add_argument("--out-xlsx", default="data/excel/data_dl_augmented.xlsx")
+    ap.add_argument("--aug-preset", choices=["legacy", "simple", "none"], default="legacy")
+    ap.add_argument("--img-size-for-aug", type=int, default=512)
     args = ap.parse_args()
 
-    augment_with_records(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
-        excel_in=args.excel_in,
-        excel_out=args.excel_out,
-        csv_out=args.csv_out,
-        multiplier=args.multiplier,
-        size=args.size,
-        strength=args.strength,
+    augment_records(
+        input_table=args.input_table,
+        images_src=args.images_src,
+        images_dst=args.images_dst,
+        num_aug_per_image=args.num_aug_per_image,
+        start_id=args.start_id,
         seed=args.seed,
-        use_blur=not args.no_blur,
+        make_val=args.make_val,
+        val_frac=args.val_frac,
+        out_csv=args.out_csv,
+        out_xlsx=args.out_xlsx,
+        aug_preset=args.aug_preset,
+        img_size_for_aug=args.img_size_for_aug,
     )
 
 if __name__ == "__main__":
