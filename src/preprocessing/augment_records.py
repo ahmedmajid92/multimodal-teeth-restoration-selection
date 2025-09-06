@@ -39,17 +39,21 @@ def T_Affine(p=0.85, translate=0.10, scale=0.10, rotate=25, border=cv2.BORDER_RE
                               rotate_limit=rotate, border_mode=border, p=p)
 
 def T_GaussianNoise(p=0.35):
-    if hasattr(A, "GaussianNoise"):
+    """Try different parameter names for GaussNoise across versions."""
+    try:
+        # Try GaussNoise with var_limit (most common)
+        return A.GaussNoise(var_limit=(5.0, 25.0), p=p)
+    except (TypeError, ValueError):
         try:
-            return A.GaussianNoise(var_limit=(5.0, 25.0), p=p)
-        except TypeError:
-            return A.GaussianNoise(sigma_limit=(5.0, 25.0), p=p)
-    if hasattr(A, "GaussNoise"):
-        try:
-            return A.GaussNoise(noise_scale_factor=(5.0, 25.0), p=p)
-        except TypeError:
-            return A.GaussNoise(var_limit=(5, 25), p=p)
-    return A.NoOp(p=0.0)
+            # Try with different parameter name
+            return A.GaussNoise(noise_scale_factor=15.0, p=p)  # Use single value instead of tuple
+        except (TypeError, ValueError):
+            try:
+                # Use default parameters
+                return A.GaussNoise(p=p)
+            except (TypeError, ValueError, AttributeError):
+                # If nothing works, return NoOp
+                return A.NoOp(p=0.0)
 
 def T_Elastic(alpha=20, sigma=4, p=0.20):
     try:
@@ -58,13 +62,38 @@ def T_Elastic(alpha=20, sigma=4, p=0.20):
         return A.ElasticTransform(alpha=alpha, sigma=sigma, alpha_affine=0, p=p)
 
 def T_Cutout(num=1, max_frac=0.12, size=512, p=0.20):
-    max_h = int(max_frac * size); max_w = int(max_frac * size)
+    """Try different parameter names for CoarseDropout/Cutout across versions."""
+    max_h = int(max_frac * size)
+    max_w = int(max_frac * size)
+    
+    # Try Cutout first (if available)
     if hasattr(A, "Cutout"):
-        return A.Cutout(num_holes=num, max_h_size=max_h, max_w_size=max_w, fill_value=0, p=p)
-    try:
-        return A.CoarseDropout(max_holes=num, max_height=max_h, max_width=max_w, p=p)
-    except TypeError:
-        return A.NoOp(p=0.0)
+        try:
+            return A.Cutout(num_holes=num, max_h_size=max_h, max_w_size=max_w, fill_value=0, p=p)
+        except (TypeError, ValueError):
+            try:
+                return A.Cutout(p=p)
+            except (TypeError, ValueError):
+                pass
+    
+    # Try CoarseDropout with different parameter names
+    if hasattr(A, "CoarseDropout"):
+        try:
+            # Try newer parameter names
+            return A.CoarseDropout(max_holes=num, max_height=max_h, max_width=max_w, p=p)
+        except (TypeError, ValueError):
+            try:
+                # Try alternative parameter names
+                return A.CoarseDropout(num_holes=num, hole_height_range=(max_h//2, max_h), hole_width_range=(max_w//2, max_w), p=p)
+            except (TypeError, ValueError):
+                try:
+                    # Use default parameters
+                    return A.CoarseDropout(p=p)
+                except (TypeError, ValueError):
+                    pass
+    
+    # If nothing works, return NoOp
+    return A.NoOp(p=0.0)
 
 def T_MotionBlur(limit=3, p=0.20, use_blur=True):
     if not use_blur:

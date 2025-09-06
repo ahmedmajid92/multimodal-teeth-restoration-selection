@@ -118,3 +118,28 @@ python tests/evaluate_models.py --model blend --blend-alpha 0.6 --threshold 0.3 
 
 # Stack Blend
 python models/stack_blend.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6
+
+
+##### Deep Learning Models ####
+
+## Hard labels (Direct vs Indirect):
+python run_train_images.py --task hard --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42
+
+
+## Soft labels (probability of Indirect):
+python run_train_images.py --task soft --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name convnext_tiny --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42
+
+## Train both (chain on one line):
+python run_train_images.py --task hard --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42 && python run_train_images.py --task soft --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name convnext_tiny --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42
+
+
+#### Evaluations
+
+## Hard model only:
+python models/vision/eval_models.py --which hard --hard-ckpt weights/vision_hard_best.pt --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --batch-size 32 --out-csv outputs/hard_preds.csv
+
+## Soft model only:
+python models/vision/eval_models.py --which soft --soft-ckpt weights/vision_soft_best.pt --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --batch-size 32 --out-csv outputs/soft_preds.csv
+
+## Evaluate both:
+python models/vision/eval_models.py --which both --hard-ckpt weights/vision_hard_best.pt --soft-ckpt weights/vision_soft_best.pt --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --batch-size 32 --out-csv outputs/both_preds.csv
