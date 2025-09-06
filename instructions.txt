@@ -24,6 +24,23 @@ python .\run_augment_simple.py --input_dir .\data\processed\images --output_dir 
 # If you want with no blur add this flag
 --no_blur
 
+## 10 Methods of Data Augmentation were:
+1. Horizontal flip
+2. Vertical flip (low probability)
+3. Translation (shift) via Affine
+4. Scaling (zoom in/out) via Affine
+5. Rotation (± up to ~25°) via Affine
+6. Random brightness & contrast adjustment
+7. Hue / saturation / value (color) jitter
+8. Gaussian noise (light)
+9. Motion blur (optional; off if you pass --no_blur)
+10. Elastic deformation (mild shape warp)
+
+Note: depending on strength, it may also apply Grid Distortion, Optical Distortion, and Cutout (small occlusions), and it always finishes with a Resize to 512×512 for consistency.
+
+## Aygmentation with Records
+python .\run_augment_records.py --input_dir .\data\processed\images --output_dir .\data\augmented --excel_in .\data\excel\data_dl.xlsx --excel_out .\data\excel\data_dl_augmented.xlsx --csv_out .\data\excel\data_dl_augmented.csv --multiplier 10 --size 512 --strength medium --no_blur
+
 # train XGBoost (uses data\excel\data_processed.csv and respects the 'split' column if present)
 python models/xgboost_model.py
 
