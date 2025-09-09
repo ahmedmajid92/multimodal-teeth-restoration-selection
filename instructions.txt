@@ -154,6 +154,9 @@ python run_train_images.py --task soft --csv-path data/excel/data_dl_augmented.c
 
 python models/vision/train_soft.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name convnext_tiny --img-size 512 --epochs 20 --batch-size 12
 
+## Soft Labels, Enable grouped split, TTA, and threshold tuning:
+python models/vision/train_soft.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42 --group-col origin_id --tta
+
 
 ## Train both (chain on one line):
 python run_train_images.py --task hard --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name tf_efficientnet_b3_ns --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42 && python run_train_images.py --task soft --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --model-name convnext_tiny --img-size 512 --epochs 20 --batch-size 12 --num-workers 4 --seed 42
