@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import StratifiedShuffleSplit
 from .metrics import evaluate, tune_threshold
 from .calibration import Calibrator
 from .meta_learner import MetaStacker
@@ -11,22 +12,48 @@ from .weight_search import search_weights
 def fit_fusion(
     data_csv="data_processed.csv",
     image_root="images",
-    weight_dir="weight",
+    weight_dir="weights",          # default -> 'weights'
     ml_dir="models/outputs",
-    out_dir="weight/fusion",
+    out_dir="weights/fusion",
     calibrator_kind="isotonic",
     threshold_metric="f1",
     xgb_model_path=None,
     lgbm_model_path=None,
-    skip_tabular=False
+    skip_tabular=False,
+    val_ratio=0.2,                 # NEW: auto-val share from train if missing
+    random_state=42                # NEW: reproducible split
 ):
     Path(out_dir).mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(data_csv)
-    df_val = df[df["split"].astype(str).str.lower()=="val"].copy()
-    df_test = df[df["split"].astype(str).str.lower()=="test"].copy()
-    if df_val.empty or df_test.empty:
-        raise RuntimeError("VAL/TEST splits not found. Ensure 'split' column has 'val' and 'test' rows.")
+    # normalize split labels
+    if "split" not in df.columns:
+        raise RuntimeError("Column 'split' not found in data CSV.")
+    df["split"] = df["split"].astype(str).str.lower()
+
+    has_val = (df["split"] == "val").any()
+    has_test = (df["split"] == "test").any()
+
+    if not has_test:
+        raise RuntimeError("TEST split not found. Ensure some rows have split='test'.")
+
+    if not has_val:
+        # Build a validation split from the TRAIN subset (stratified by y_majority)
+        train_df = df[df["split"] == "train"].copy()
+        if train_df.empty:
+            raise RuntimeError("No 'val' and no 'train' rows — cannot create validation.")
+        if "y_majority" not in train_df.columns:
+            raise RuntimeError("y_majority column required to create stratified validation split.")
+
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=val_ratio, random_state=random_state)
+        idx_train, idx_val = next(sss.split(train_df, train_df["y_majority"].astype(int)))
+        df_val = train_df.iloc[idx_val].copy()
+        df_test = df[df["split"] == "test"].copy()
+        print(f"[INFO] Auto-created VAL from TRAIN: val_ratio={val_ratio}  "
+              f"VAL={len(df_val)}  TEST={len(df_test)}")
+    else:
+        df_val = df[df["split"] == "val"].copy()
+        df_test = df[df["split"] == "test"].copy()
 
     y_val = df_val["y_majority"].values.astype(int)
     y_test = df_test["y_majority"].values.astype(int)
@@ -57,12 +84,10 @@ def fit_fusion(
     P_test = np.vstack(test_list).T
 
     # Calibrate each stream on VAL
-    C_list = []
     for i in range(P_val.shape[1]):
         Ci = Calibrator(kind=calibrator_kind).fit(P_val[:, i], y_val)
         P_val[:, i]  = Ci.transform(P_val[:, i])
         P_test[:, i] = Ci.transform(P_test[:, i])
-        C_list.append(Ci)
 
     # Meta-stacker
     stacker = MetaStacker(C=1.0).fit(P_val, y_val)
@@ -96,7 +121,6 @@ def fit_fusion(
         "threshold": t,
     }
 
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
     with open(Path(out_dir)/"fusion_summary.json", "w") as f:
         json.dump(meta, f, indent=2)
     np.save(Path(out_dir)/"P_val.npy", P_val)

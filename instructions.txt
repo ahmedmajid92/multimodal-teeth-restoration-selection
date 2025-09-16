@@ -189,9 +189,7 @@ data_processed.csv  # has split, y_majority, p_indirect, image_name, features
 
 2. Fit the fusion (calibrate + blend/stack + threshold tune):
 
-python -c "from src.fusion.fuse_train import fit_fusion; fit_fusion(data_csv='data/excel/data_processed.csv', 
-image_root='data/processed/images', weight_dir='weight', ml_dir='models/outputs', out_dir='weight/fusion', 
-calibrator_kind='isotonic', threshold_metric='f1')"
+python -c "from src.fusion.fuse_train import fit_fusion; fit_fusion(data_csv='data/excel/data_processed.csv', image_root='data/processed/images', weight_dir='weight', ml_dir='models/outputs', out_dir='weight/fusion', calibrator_kind='isotonic', threshold_metric='f1')"
 
 # (If you prefer CLI flags, add argparse to fuse_train.py; the current function can be imported and called from run_pipeline.py.)
 

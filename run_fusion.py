@@ -10,10 +10,11 @@ def _default_paths():
     return dict(
         data_csv="data/excel/data_processed.csv",
         image_root="data/processed/images",
-        weight_dir="weight",
+        weight_dir="weights",            # default -> 'weights'
         ml_dir="models/outputs",
-        fusion_dir="weight/fusion",
+        fusion_dir="weights/fusion",     # keep fusion under weights/
     )
+
 
 def _ensure_exists(p: Path, kind="file"):
     if kind == "file" and not p.is_file():
@@ -34,6 +35,8 @@ def cmd_train(args):
         xgb_model_path=args.xgb_model,
         lgbm_model_path=args.lgbm_model,
         skip_tabular=args.skip_tabular,
+        val_ratio=args.val_ratio,              # NEW
+        random_state=args.random_state         # NEW
     )
     print("[INFO] Training hybrid fusion with:", json.dumps(kw, indent=2))
     fit_fusion(**kw)
@@ -140,6 +143,8 @@ def build_parser():
     t.add_argument("--xgb-model", default=None, help="Explicit path to XGBoost model (.json/.ubj/.bin/.pkl)")
     t.add_argument("--lgbm-model", default=None, help="Explicit path to LightGBM model (.txt/.pkl)")
     t.add_argument("--skip-tabular", action="store_true", help="Ignore tabular models and use vision only")
+    t.add_argument("--val-ratio", type=float, default=0.2, help="Auto-validation size from TRAIN if no val split")
+    t.add_argument("--random-state", type=int, default=42, help="Random seed for auto-validation split")
     t.set_defaults(func=cmd_train)
 
     # info
