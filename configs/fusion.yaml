@@ -1,0 +1,7 @@
+# configs/fusion.yaml
+calibrator: isotonic   # isotonic | platt
+threshold_metric: f1   # f1 | youden | pr_auc
+image_root: images
+weight_dir: weight
+ml_dir: models/outputs
+fusion_out: weight/fusion

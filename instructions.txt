@@ -172,3 +172,106 @@ python models/vision/eval_models.py --which soft --soft-ckpt weights/vision_soft
 
 ## Evaluate both:
 python models/vision/eval_models.py --which both --hard-ckpt weights/vision_hard_best.pt --soft-ckpt weights/vision_soft_best.pt --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --batch-size 32 --out-csv outputs/both_preds.csv
+
+
+
+
+
+################                      #################
+################  Hybrid Fusion Model #################
+
+1. Train Base Models
+weight/vision_hard_best.pt
+weight/vision_soft_best.pt
+models/outputs/  # xgb & lgbm artifacts (.pkl/.txt/.json)
+data_processed.csv  # has split, y_majority, p_indirect, image_name, features
+
+
+2. Fit the fusion (calibrate + blend/stack + threshold tune):
+
+python -c "from src.fusion.fuse_train import fit_fusion; fit_fusion(data_csv='data/excel/data_processed.csv', 
+image_root='data/processed/images', weight_dir='weight', ml_dir='models/outputs', out_dir='weight/fusion', 
+calibrator_kind='isotonic', threshold_metric='f1')"
+
+# (If you prefer CLI flags, add argparse to fuse_train.py; the current function can be imported and called from run_pipeline.py.)
+
+3. Peek at the fusion result
+# in powershell:
+Get-Content .\weight\fusion\fusion_summary.json
+
+4. Single-case inference (clear Direct/Indirect)
+
+python - << 'PY'
+import pandas as pd
+from src.fusion.fuse_infer import infer_case
+
+df = pd.read_csv("data/excel/data_processed.csv")
+row = df[df["split"]=="test"].iloc[0]   # any test row with image_name + features
+res = infer_case(
+    row,
+    image_root="data/processed/images",
+    weight_dir="weight",
+    ml_dir="models/outputs",
+    fusion_dir="weight/fusion"
+)
+print(res)   # shows p_indirect, threshold, decision, and stream_weights
+PY
+
+5. Batch inference over the whole test split → CSV
+python - << 'PY'
+import pandas as pd
+from src.fusion.fuse_infer import infer_case
+
+df = pd.read_csv("data/excel/data_processed.csv")
+test = df[df["split"]=="test"].copy()
+
+outs = [infer_case(
+            r,
+            image_root="data/processed/images",
+            weight_dir="weight",
+            ml_dir="models/outputs",
+            fusion_dir="weight/fusion"
+        ) for _, r in test.iterrows()]
+
+test["p_indirect"] = [o["p_indirect"] for o in outs]
+test["decision"]   = [o["decision"] for o in outs]
+test.to_csv("models/outputs/hybrid_test_predictions.csv", index=False)
+print("Saved -> models/outputs/hybrid_test_predictions.csv")
+PY
+
+
+################                                         #################
+################  Hybrid Fusion Model (From main fusion) #################
+
+1. Fit the hybrid:
+python run_fusion.py train
+
+# Note - Change knobs if you want:
+--calibrator platt
+--metric youden
+
+2. Inspect the result (threshold, metrics, chosen fusion)
+python run_fusion.py info
+
+3. Infer a single case
+By index within the test split (default index 0):
+python run_fusion.py infer-one
+
+By specific image name:
+python run_fusion.py infer-one --image-name 133.jpg
+
+Save to a JSON file and override threshold:
+python run_fusion.py infer-one --row-idx 2 --threshold 0.30 --out models/outputs/case_2.json
+
+4. Batch inference → CSV
+Over the test split:
+python run_fusion.py infer-batch
+
+Over all rows:
+python run_fusion.py infer-batch --split all
+
+Over a custom CSV (e.g., external cohort):
+python run_fusion.py infer-batch --csv-in path/to/new_cases.csv --out models/outputs/hybrid_new_cases.csv
+
+5. Custom paths (if your structure differs):
+python run_fusion.py train --data-csv data/excel/data_processed.csv --image-root data/processed/images --weight-dir weight --ml-dir models/outputs --fusion-dir weight/fusion
