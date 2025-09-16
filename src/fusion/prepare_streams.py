@@ -4,24 +4,44 @@ import numpy as np
 import pandas as pd
 
 # -----------------------------
-# Helpers for tabular features
+# Feature spec used by ML training (9 base + 7 engineered = 16)
 # -----------------------------
-def _numeric_feature_matrix(df: pd.DataFrame):
+_BASE_FEATURES = [
+    "depth", "width", "enamel_cracks", "occlusal_load", "carious_lesion",
+    "opposing_type", "adjacent_teeth", "age_range", "cervical_lesion"
+]
+_ENGINEERED = [
+    "deep_and_thin", "deep_or_cracks", "load_implant",
+    "risk_plus_cervical", "stable_wall", "depth_x_load", "depth_x_risk"
+]
+_ALL_FEATURES = _BASE_FEATURES + _ENGINEERED
+
+def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Build a numeric feature matrix for tabular models.
-    Excludes common label/metadata columns if they are numeric.
+    Recreate the DomainFeatures logic from training on a copy of df
+    and return a DataFrame with the exact 16 columns in the right order.
     """
-    drop_cols = {
-        "split", "image_name", "image_path",
-        "y", "y_hard", "y_soft", "y_majority",
-        "soft_label", "p_indirect", "label", "target",
-        "weight"
-    }
-    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
-    cols = [c for c in num_cols if c not in drop_cols]
-    if not cols:
-        raise RuntimeError("No numeric feature columns found for tabular models.")
-    return df[cols].to_numpy(), cols
+    missing = [c for c in _BASE_FEATURES if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Missing base features: {missing}")
+
+    X = df[_BASE_FEATURES].copy()
+
+    # Ensure numeric + no NaNs (mirror imputer safety)
+    for c in _BASE_FEATURES:
+        X[c] = pd.to_numeric(X[c], errors="coerce").fillna(0).astype(int)
+
+    # Engineered features (same rules as training DomainFeatures)
+    X["deep_and_thin"]     = ((X["depth"] == 1) & (X["width"] == 0)).astype(int)
+    X["deep_or_cracks"]    = ((X["depth"] == 1) | (X["enamel_cracks"] == 1)).astype(int)
+    X["load_implant"]      = ((X["occlusal_load"] == 1) & (X["opposing_type"] == 3)).astype(int)
+    X["risk_plus_cervical"]= ((X["carious_lesion"] == 1) & (X["cervical_lesion"] == 1)).astype(int)
+    X["stable_wall"]       = ((X["width"] == 1) & (X["enamel_cracks"] == 0) & (X["occlusal_load"] == 0)).astype(int)
+    X["depth_x_load"]      = (X["depth"] * X["occlusal_load"]).astype(int)
+    X["depth_x_risk"]      = (X["depth"] * X["carious_lesion"]).astype(int)
+
+    # Return in fixed order
+    return X[_ALL_FEATURES]
 
 def _find_model(path: Path, patterns):
     """
@@ -121,8 +141,9 @@ def collect_base_preds(
         if not skip_tabular:
             from ..tabular.predict_tabular import predict_xgb, predict_lgbm
 
-            X_val, cols = _numeric_feature_matrix(df_val)
-            X_test = df_test[cols].to_numpy()
+            # Build features for BOTH splits with the SAME recipe
+            X_val_df  = _build_features(df_val)
+            X_test_df = _build_features(df_test)
 
             # explicit paths override discovery
             if xgb_model_path is None:
@@ -136,10 +157,15 @@ def collect_base_preds(
                     ["**/*lgbm*.pkl", "**/*lgbm*.joblib", "**/*lgbm*.txt", "**/*lgbm*.json"]
                 )
 
-            out["val"]["xgb"]   = predict_xgb(xgb_model_path, X_val) if xgb_model_path else None
-            out["test"]["xgb"]  = predict_xgb(xgb_model_path, X_test) if xgb_model_path else None
-            out["val"]["lgbm"]  = predict_lgbm(lgbm_model_path, X_val) if lgbm_model_path else None
-            out["test"]["lgbm"] = predict_lgbm(lgbm_model_path, X_test) if lgbm_model_path else None
+            # NOTE: we pass numpy arrays (same 16-col order) to predictors
+            Xv = X_val_df[_ALL_FEATURES]   # DataFrame, keeps names
+            Xt = X_test_df[_ALL_FEATURES]
+
+            out["val"]["xgb"]   = predict_xgb(xgb_model_path, Xv) if xgb_model_path else None
+            out["test"]["xgb"]  = predict_xgb(xgb_model_path, Xt) if xgb_model_path else None
+            out["val"]["lgbm"]  = predict_lgbm(lgbm_model_path, Xv) if lgbm_model_path else None
+            out["test"]["lgbm"] = predict_lgbm(lgbm_model_path, Xt) if lgbm_model_path else None
+
         else:
             out["val"]["xgb"] = out["test"]["xgb"] = None
             out["val"]["lgbm"] = out["test"]["lgbm"] = None

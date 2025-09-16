@@ -6,6 +6,15 @@ import json
 from pathlib import Path
 import sys
 
+# --- compatibility stub for old pickled pipelines ---
+class ImputerThenModel:  # noqa: D401 - minimal shell for unpickling
+    """Placeholder shim injected for joblib unpickling."""
+    def __init__(self, *args, **kwargs):
+        # the real attributes will be populated by joblib.load()
+        pass
+# ----------------------------------------------------
+
+
 def _default_paths():
     return dict(
         data_csv="data/excel/data_processed.csv",
@@ -73,24 +82,47 @@ def _load_row(args):
             sys.exit(f"[ERROR] row_idx {args.row_idx} out of range for split '{args.split}'")
     return row
 
+# in run_fusion.py
 def cmd_infer_one(args):
+    from pathlib import Path
+    import pandas as pd
     from src.fusion.fuse_infer import infer_case
-    row = _load_row(args)
+
+    df = pd.read_csv(args.data_csv)
+    df["image_name"] = df["image_name"].astype(str)
+
+    m = df["image_name"].str.lower() == args.image_name.lower()
+    if not m.any():
+        raise SystemExit(f"image_name '{args.image_name}' not found in {args.data_csv}")
+
+    row = df.loc[m].iloc[0]
+
     res = infer_case(
-        row,
-        image_root=args.image_root,
-        weight_dir=args.weight_dir,
-        ml_dir=args.ml_dir,
-        fusion_dir=args.fusion_dir,
+        row=row,
+        image_root=Path(args.image_root),
+        weight_dir=Path(args.weight_dir),
+        fusion_dir=Path(args.fusion_dir),                 # <-- read fusion artifacts from here
+        xgb_model_path=Path(args.xgb_model) if args.xgb_model else None,
+        lgbm_model_path=Path(args.lgbm_model) if args.lgbm_model else None,
         override_threshold=args.threshold
     )
-    out = json.dumps(res, indent=2)
-    if args.out:
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(out, encoding="utf-8")
-        print("[OK] Saved:", args.out)
-    else:
-        print(out)
+
+    print("\n🖼  Image:", res["image_name"])
+    print("Streams used:", res["streams_used"])
+    print(f"p_indirect={res['p_indirect']:.4f}  threshold={res['threshold']:.3f}  =>  {res['label']}")
+    
+    # Extra debug
+    print("\nPer-stream probabilities:")
+    for k in res["streams_used"]:
+        print(f"  {k:>6}: {res['streams_raw'][k]:.4f}")
+
+    print("\nFusion weights & contributions:")
+    for k in res["streams_used"]:
+        w = res["weights_used"][k]
+        c = res["components"][k]
+        print(f"  {k:>6}: weight={w:.3f}  contrib={c:.4f}")
+
+
 
 def cmd_infer_batch(args):
     import pandas as pd
@@ -112,14 +144,14 @@ def cmd_infer_batch(args):
             r,
             image_root=args.image_root,
             weight_dir=args.weight_dir,
-            ml_dir=args.ml_dir,
             fusion_dir=args.fusion_dir,
             override_threshold=args.threshold
         )
         outs.append(o)
 
     test["p_indirect"] = [o["p_indirect"] for o in outs]
-    test["decision"]   = [o["decision"] for o in outs]
+    test["label"]      = [o["label"] for o in outs]
+
 
     out_path = Path(args.out or f"{args.ml_dir}/hybrid_{args.split}_predictions.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,18 +185,22 @@ def build_parser():
     i.set_defaults(func=cmd_info)
 
     # infer-one
-    o = sub.add_parser("infer-one", help="Infer a single case (Direct/Indirect)")
-    o.add_argument("--data-csv", default=D["data_csv"])
+    o = sub.add_parser("infer-one", help="Predict Direct/Indirect for a single image from CSV")
+    o.add_argument("--image-name", required=True, help="Exact image_name as it appears in the CSV (case-insensitive)")
+    o.add_argument("--xgb-model", default=None, help="Path to XGBoost pipeline/booster (optional)")
+    o.add_argument("--lgbm-model", default=None, help="Path to LightGBM pipeline/booster (optional)")
+    o.add_argument("--threshold", type=float, default=None, help="Override decision threshold (optional)")
+
+    # common paths (match what `main()` expects)
+    D = _default_paths()  # if not already in scope, move this call above
+    o.add_argument("--data-csv",   default=D["data_csv"])
     o.add_argument("--image-root", default=D["image_root"])
     o.add_argument("--weight-dir", default=D["weight_dir"])
-    o.add_argument("--ml-dir", default=D["ml_dir"])
+    o.add_argument("--ml-dir",     default=D["ml_dir"])
     o.add_argument("--fusion-dir", default=D["fusion_dir"])
-    o.add_argument("--split", default="test", choices=["train","val","test","all"])
-    o.add_argument("--row-idx", type=int, default=0, help="Index within the chosen split (ignored if --image-name set)")
-    o.add_argument("--image-name", default=None, help="Exact filename in data CSV to select a case")
-    o.add_argument("--threshold", type=float, default=None, help="Override final decision threshold")
-    o.add_argument("--out", default=None, help="Path to save JSON output")
+
     o.set_defaults(func=cmd_infer_one)
+
 
     # infer-batch
     b = sub.add_parser("infer-batch", help="Batch inference over a split or custom CSV")

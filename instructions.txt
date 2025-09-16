@@ -248,6 +248,9 @@ python run_fusion.py train
 --calibrator platt
 --metric youden
 
+# With tabular:
+python run_fusion.py train --xgb-model models/outputs/xgb_classifier_pipeline.joblib --lgbm-model models/outputs/lgbm_regressor_pipeline.joblib
+
 2. Inspect the result (threshold, metrics, chosen fusion)
 python run_fusion.py info
 
