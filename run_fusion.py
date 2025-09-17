@@ -24,6 +24,23 @@ def _default_paths():
         fusion_dir="weights/fusion",     # keep fusion under weights/
     )
 
+def _load_calibrators(fusion_dir: Path):
+    p = Path(fusion_dir) / "calibrators.json"
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
+
+def _apply_iso(p, table):
+    # piecewise-constant isotonic mapping via (x, y) table
+    import numpy as np
+    x = np.asarray(table["x"])
+    y = np.asarray(table["y"])
+    p = float(np.clip(p, 1e-6, 1-1e-6))
+    # find rightmost x <= p
+    idx = np.searchsorted(x, p, side="right") - 1
+    idx = np.clip(idx, 0, len(y)-1)
+    return float(y[idx])
+
 
 def _ensure_exists(p: Path, kind="file"):
     if kind == "file" and not p.is_file():
