@@ -31,18 +31,25 @@ def _print_audit(title: str, df: pd.DataFrame, label_col: str):
     print(f"\n📋 {title} split audit:")
     print(json.dumps(rep, indent=2))
 
-def _has_col(df: pd.DataFrame, col: str) -> bool:
+def _has(df: pd.DataFrame, col: str) -> bool:
     return col in df.columns
+
+def _coerce_label(df: pd.DataFrame, label_col: str) -> pd.DataFrame:
+    if _has(df, label_col):
+        df[label_col] = df[label_col].astype(int)
+    else:
+        raise KeyError(f"Missing label column '{label_col}'")
+    return df
 
 def main():
     ap = argparse.ArgumentParser()
-    # Inputs (existing files)
+    # Inputs
     ap.add_argument("--raw-xlsx",           default="data/excel/data.xlsx")
     ap.add_argument("--processed-xlsx",     default="data/excel/data_processed.xlsx")
     ap.add_argument("--dl-xlsx",            default="data/excel/data_dl.xlsx")
     ap.add_argument("--dl-aug-xlsx",        default="data/excel/data_dl_augmented.xlsx")
 
-    # Outputs (will overwrite with split columns)
+    # Outputs
     ap.add_argument("--processed-xlsx-out", default="data/excel/data_processed.xlsx")
     ap.add_argument("--processed-csv-out",  default="data/excel/data_processed.csv")
     ap.add_argument("--dl-xlsx-out",        default="data/excel/data_dl.xlsx")
@@ -56,7 +63,9 @@ def main():
     ap.add_argument("--test-frac",  type=float, default=0.15)
     ap.add_argument("--seed",       type=int,   default=42)
     ap.add_argument("--group-col",  default="origin_id")
-    ap.add_argument("--label-col",  default="y_majority")  # binary 0/1 everywhere
+    ap.add_argument("--label-col",  default="y_majority")
+    ap.add_argument("--max-trials", type=int,   default=400, help="Search tries for best grouped balance")
+
     args = ap.parse_args()
 
     cfg = SplitConfig(
@@ -66,44 +75,33 @@ def main():
         seed=args.seed,
         group_col=args.group_col,
         label_col=args.label_col,
+        max_trials=args.max_trials,
     )
 
     print("="*88)
-    print("🧮 Making balanced Train/Val/Test splits (grouped & stratified)")
-    print(f"  Fractions: train={cfg.train_frac} val={cfg.val_frac} test={cfg.test_frac}  |  seed={cfg.seed}")
+    print("🧮 Balanced Train/Val/Test splits (grouped & stratified, search-based)")
+    print(f"  Fractions: train={cfg.train_frac} val={cfg.val_frac} test={cfg.test_frac}  |  seed={cfg.seed}  |  trials={cfg.max_trials}")
     print(f"  group_col='{cfg.group_col}'  label_col='{cfg.label_col}'")
     print("="*88)
 
-    # ------------------------------------------------------------------
-    # 1) Tabular (processed) — used by your ML models
-    # ------------------------------------------------------------------
-    df_proc = pd.read_excel(args.processed_xlsx, engine="openpyxl")  # Fixed: processed_xlsx not processed-xlsx
-    # Ensure label column types
-    if _has_col(df_proc, cfg.label_col):
-        df_proc[cfg.label_col] = df_proc[cfg.label_col].astype(int)
-    else:
-        raise KeyError(f"Processed data missing '{cfg.label_col}'")
+    # ------------------ 1) PROCESSED (ML) ------------------
+    df_proc = pd.read_excel(args.processed_xlsx, engine="openpyxl")
+    df_proc = _coerce_label(df_proc, cfg.label_col)
 
-    # Choose grouped vs row split
-    if _has_col(df_proc, cfg.group_col):
+    if _has(df_proc, cfg.group_col):
         tr, va, te = stratified_group_split(df_proc, cfg)
     else:
         tr, va, te = stratified_row_split(df_proc, cfg)
-    df_proc_out = pd.concat([tr.assign(split="train"), va.assign(split="val"), te.assign(split="test")], ignore_index=True)
 
+    df_proc_out = pd.concat([tr.assign(split="train"), va.assign(split="val"), te.assign(split="test")], ignore_index=True)
     _print_audit("Processed (ML)", df_proc_out, cfg.label_col)
     _save_dual(df_proc_out, args.processed_xlsx_out, args.processed_csv_out)
 
-    # ------------------------------------------------------------------
-    # 2) DL base (no augmentation) — used to define DL splits
-    # ------------------------------------------------------------------
-    df_dl = pd.read_excel(args.dl_xlsx, engine="openpyxl")  # Fixed: dl_xlsx not dl-xlsx
-    if _has_col(df_dl, cfg.label_col):
-        df_dl[cfg.label_col] = df_dl[cfg.label_col].astype(int)
-    else:
-        raise KeyError(f"DL data missing '{cfg.label_col}' (0/1)")
+    # ------------------ 2) DL BASE ------------------
+    df_dl = pd.read_excel(args.dl_xlsx, engine="openpyxl")
+    df_dl = _coerce_label(df_dl, cfg.label_col)
 
-    if _has_col(df_dl, cfg.group_col):
+    if _has(df_dl, cfg.group_col):
         tr, va, te = stratified_group_split(df_dl, cfg)
     else:
         tr, va, te = stratified_row_split(df_dl, cfg)
@@ -112,116 +110,113 @@ def main():
     _print_audit("DL base", df_dl_out, cfg.label_col)
     _save_dual(df_dl_out, args.dl_xlsx_out, args.dl_csv_out)
 
-    # ------------------------------------------------------------------
-    # 3) DL augmented — must INHERIT split from DL base (zero leakage)
-    # ------------------------------------------------------------------
+    # ------------------ 3) DL AUGMENTED ------------------
     df_aug = pd.read_excel(args.dl_aug_xlsx, engine="openpyxl")
-    # Allow missing label in augmented file; if present, cast to int
-    if _has_col(df_aug, cfg.label_col):
+    if _has(df_aug, cfg.label_col):
         df_aug[cfg.label_col] = df_aug[cfg.label_col].astype(int)
 
     # Debug: Check what columns are available
     print(f"📊 DL base columns: {list(df_dl_out.columns)}")
     print(f"📊 DL augmented columns: {list(df_aug.columns)}")
-    
-    # Special handling: if base doesn't have origin_id but augmented does,
-    # we need to map origin_id back to image_name for the base split lookup
-    if (cfg.group_col not in df_dl_out.columns and 
-        cfg.group_col in df_aug.columns and 
+
+    # Special case: Base has image_name but no origin_id, augmented has both
+    if (not _has(df_dl_out, cfg.group_col) and 
+        _has(df_aug, cfg.group_col) and 
         "image_name" in df_dl_out.columns):
         
-        print(f"⚠️  Base data missing '{cfg.group_col}', using image_name mapping")
+        print(f"⚠️  Base data missing '{cfg.group_col}', creating mapping via augmented data")
         
-        # Create a mapping from origin_id to base image_name using the augmented data
-        # We'll use the first occurrence (aug_idx=0) to map back to original
-        origin_to_base = (
+        # Create mapping from origin_id to original image name using aug_idx=0
+        origin_mapping = (
             df_aug[df_aug["aug_idx"] == 0][["origin_id", "image_name"]]
             .drop_duplicates()
-            .rename(columns={"image_name": "base_image_name"})
+            .rename(columns={"image_name": "original_image_name"})
         )
         
-        # Add origin_id to base data via this mapping
-        df_dl_out_with_origin = df_dl_out.merge(
-            origin_to_base.rename(columns={"base_image_name": "image_name"}),
+        print(f"📊 Created {len(origin_mapping)} origin_id -> image_name mappings")
+        
+        # Add origin_id to base data
+        df_base_with_origin = df_dl_out.merge(
+            origin_mapping.rename(columns={"original_image_name": "image_name"}),
             on="image_name",
             how="left"
         )
         
-        # Use origin_id as the group column for propagation
-        base_cols = ["origin_id", "split"]
-        if _has_col(df_dl_out, cfg.label_col):
-            base_cols.append(cfg.label_col)
+        # Check merge success
+        missing_origins = df_base_with_origin["origin_id"].isna().sum()
+        if missing_origins > 0:
+            print(f"⚠️  {missing_origins} base images couldn't be mapped to origin_id")
         
-        print(f"📊 Using mapped base columns for propagation: {base_cols}")
+        # Use origin_id from the enhanced base for propagation
+        base_cols = ["origin_id", "split", "y_majority"]
+        propagation_base = df_base_with_origin[base_cols].dropna().drop_duplicates()
         
-        # Now propagate using origin_id
-        df_aug_out = propagate_split_to_augmented(
-            df_aug=df_aug,
-            df_base=df_dl_out_with_origin[base_cols].drop_duplicates(),
-            group_col=cfg.group_col,
-            image_col_aug="image_name",
-            image_col_base="image_name",
-            parent_col_aug=None,  # We're using origin_id directly
+        print(f"📊 Using {len(propagation_base)} origin-based mappings for propagation")
+        
+        # Now propagate using origin_id directly
+        df_aug_out = df_aug.copy()
+        df_aug_out = df_aug_out.merge(
+            propagation_base.rename(columns={"split": "split_base", "y_majority": "y_majority_base"}),
+            on="origin_id",
+            how="left"
         )
+        
+        # Update splits - prioritize base splits over existing ones
+        df_aug_out["split"] = df_aug_out["split_base"].fillna(df_aug_out["split"]).fillna("train")
+        df_aug_out = df_aug_out.drop(columns=["split_base"], errors="ignore")
+        
+        # Update labels if needed
+        if "y_majority_base" in df_aug_out.columns and cfg.label_col not in df_aug_out.columns:
+            df_aug_out[cfg.label_col] = df_aug_out["y_majority_base"]
+        df_aug_out = df_aug_out.drop(columns=["y_majority_base"], errors="ignore")
+        
     else:
-        # Original logic for when columns match
+        # Original logic for when columns match properly
         base_cols = ["image_name"]
-        if _has_col(df_dl_out, cfg.group_col):
+        if _has(df_dl_out, cfg.group_col):
             base_cols.append(cfg.group_col)
         base_cols.append("split")
-        if _has_col(df_dl_out, cfg.label_col):
+        if _has(df_dl_out, cfg.label_col):
             base_cols.append(cfg.label_col)
-        
+
         print(f"📊 Using base columns for propagation: {base_cols}")
 
         df_aug_out = propagate_split_to_augmented(
             df_aug=df_aug,
             df_base=df_dl_out[base_cols].copy(),
-            group_col=cfg.group_col if _has_col(df_dl_out, cfg.group_col) else None,
+            group_col=cfg.group_col if _has(df_dl_out, cfg.group_col) else None,
             image_col_aug="image_name",
             image_col_base="image_name",
             parent_col_aug="parent_image" if "parent_image" in df_aug.columns else None,
         )
 
-    # If augmented file does not have labels, fill from base on group
-    if (cfg.label_col not in df_aug_out.columns and 
-        cfg.group_col in df_aug_out.columns and 
-        cfg.group_col in df_dl_out_with_origin.columns if 'df_dl_out_with_origin' in locals() else False):
-        
-        source_df = df_dl_out_with_origin if 'df_dl_out_with_origin' in locals() else df_dl_out
-        if cfg.group_col in source_df.columns:
-            df_aug_out = df_aug_out.merge(
-                source_df[[cfg.group_col, cfg.label_col]].drop_duplicates(),
-                on=cfg.group_col, how="left"
-            )
-
-    # Sanity: check no group crosses splits (only if group_col exists)
+    # Sanity: ensure no group spans multiple splits (only if we have the group column)
     if cfg.group_col in df_aug_out.columns:
-        cross = (
-            df_aug_out.groupby(cfg.group_col)["split"]
-            .nunique()
-            .reset_index(name="n_splits")
-        )
-        bad = cross[cross["n_splits"] > 1]
-        if len(bad) > 0:
-            print("❌ ERROR: some groups appear in multiple splits after propagation. Showing first 10:")
-            print(bad.head(10))
-            print("\n🔍 Debugging info for first problematic group:")
-            problem_group = bad.iloc[0]["origin_id"]
-            debug_data = df_aug_out[df_aug_out[cfg.group_col] == problem_group][["image_name", "origin_id", "aug_idx", "split"]].head(10)
+        cross = df_aug_out.groupby(cfg.group_col)["split"].nunique()
+        bad_count = (cross > 1).sum()
+        
+        if bad_count > 0:
+            bad_groups = cross[cross > 1].index.tolist()[:5]  # Show fewer for readability
+            print(f"❌ ERROR: {bad_count} groups spanning multiple splits (showing first 5): {bad_groups}")
+            
+            # Debug info for the first problematic group
+            problem_group = bad_groups[0]
+            debug_data = df_aug_out[df_aug_out[cfg.group_col] == problem_group][
+                ["image_name", cfg.group_col, "aug_idx", "split"]
+            ].head(5)
+            print("🔍 Debug info for first problematic group:")
             print(debug_data)
-            raise SystemExit(1)
+            raise RuntimeError("Split propagation failed: groups span multiple splits")
+        else:
+            print(f"✅ All {df_aug_out[cfg.group_col].nunique()} groups properly contained within single splits")
     else:
-        print("⚠️  WARNING: No group column found, cannot verify group exclusivity across splits")
+        print("⚠️  No group column available for cross-split validation")
 
-    # Save & audit
-    audit_label = cfg.label_col if cfg.label_col in df_aug_out.columns else "y_majority"
-    _print_audit("DL augmented", df_aug_out, audit_label)
+    _print_audit("DL augmented", df_aug_out, cfg.label_col if cfg.label_col in df_aug_out.columns else cfg.label_col)
     _save_dual(df_aug_out, args.dl_aug_xlsx_out, args.dl_aug_csv_out)
 
-    print("\n✅ All splits generated successfully. You can now retrain ML & DL models.")
-    print("   • DL trainers will automatically use 'val' if present in CSV.")
-    print("   • Augmented images inherit the base split → no leakage.\n")
+    print("\n✅ All splits generated successfully. Retrain ML & DL against these CSVs.")
+    print("   DL trainers will auto-detect 'val' split if present.\n")
 
 if __name__ == "__main__":
     main()
