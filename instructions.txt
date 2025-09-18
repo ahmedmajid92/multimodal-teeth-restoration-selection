@@ -131,8 +131,8 @@ python tests/evaluate_models.py --model blend --blend-alpha 0.6 --threshold 0.3 
 
 #Updates with remove noises / min-weight = 0.15
 
-#python models/xgboost_model.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6 --no-monotone
-#python models/xgboost_model.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6 --no-monotone
+python models/xgboost_model.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6 --no-monotone
+python models/xgboost_model.py --tune-metric accuracy --min-weight 0.15 --consensus-power 0.6 --no-monotone
 
 
 # Stack Blend
@@ -276,3 +276,44 @@ python run_fusion.py infer-batch --csv-in path/to/new_cases.csv --out models/out
 
 5. Custom paths (if your structure differs):
 python run_fusion.py train --data-csv data/excel/data_processed.csv --image-root data/processed/images --weight-dir weight --ml-dir models/outputs --fusion-dir weight/fusion
+
+
+
+###################                                                #########################
+################### Deep Learning Enhacements (tf_efficientnet_b4) #########################
+
+
+1. Progressive training (B4, 384→512) for 3 seeds:
+python experiments/vision_v2/train_hard_v2.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --seeds 42,1337,2025 --save-dir weights/v2 --run-name hard_b4_prog
+
+### Test the checkpoints for test cases after training:
+python experiments/vision_v2/ensemble_hard.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --ckpts "weights/v2/hard_b4_prog_seed*_stage2_512.pt" --tta
+
+### to test single checkpoint:
+python experiments/vision_v2/eval_hard_ckpt.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --ckpt weights/v2/hard_b4_prog_seed2025_stage2_512.pt --tta
+
+2. Ensemble across the 3 seeds (stage‑2 ckpts), with TTA & threshold tuning:
+python experiments/vision_v2/ensemble_hard.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --ckpts "weights/v2/hard_b4_prog_seed*_stage2_512.pt" --tta
+
+3. Export prediction CSVs for stacking
+- Vision‑hard (ensemble):
+python experiments/vision_v2/predict_hard.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --ckpts "weights/v2/hard_b4_prog_seed*_stage2_512.pt" --tta --out-csv out/preds/vis_hard_preds.csv
+
+-Vision‑soft (your best soft ckpt):
+python experiments/vision_v2/predict_soft.py --csv-path data/excel/data_dl_augmented.csv --images-root data/augmented --ckpts weights/vision_soft_best.pt --tta --out-csv out/preds/vis_soft_preds.csv
+
+- Tabular (numeric) predictions:
+Use your existing XGBoost (hard) and LightGBM (soft) scripts to produce:
+ * out/preds/tabular_hard_preds.csv with columns: image_name,origin_id,split,prob_num_hard
+ * out/preds/tabular_soft_preds.csv with columns: image_name,origin_id,split,prob_num_soft
+
+4. Train & evaluate the hybrid stacker:
+python experiments/vision_v2/stacking/train_stacker.py --vis-hard out/preds/vis_hard_preds.csv --vis-soft out/preds/vis_soft_preds.csv --tab-hard out/preds/tabular_hard_preds.csv --tab-soft out/preds/tabular_soft_preds.csv --save-model weights/v2/stacker_logreg.pkl --report-json out/preds/stacker_report.json
+
+
+
+
+###################                               ##################
+###################  Generate Balanced Excel Data ##################
+
+python experiments/data_v2/make_balanced_splits.py --raw-xlsx data/excel/data.xlsx --processed-xlsx data/excel/data_processed.xlsx --dl-xlsx data/excel/data_dl.xlsx --dl-aug-xlsx data/excel/data_dl_augmented.xlsx --processed-xlsx-out data/excel/data_processed.xlsx --processed-csv-out data/excel/data_processed.csv --dl-xlsx-out data/excel/data_dl.xlsx --dl-csv-out data/excel/data_dl.csv --dl-aug-xlsx-out data/excel/data_dl_augmented.xlsx --dl-aug-csv-out data/excel/data_dl_augmented.csv --train-frac 0.70 --val-frac 0.15 --test-frac 0.15 --seed 42 --group-col origin_id --label-col y_majority

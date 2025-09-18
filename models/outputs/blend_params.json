@@ -1,7 +1,7 @@
 {
   "alpha": 0.6,
-  "threshold": 0.3,
+  "threshold": 0.26999999999999996,
   "metric": "f1",
-  "mode": "none",
-  "train_score": null
+  "mode": "threshold",
+  "train_score": 0.8321167883211679
 }
