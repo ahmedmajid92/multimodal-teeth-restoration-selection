@@ -1,0 +1,8 @@
+{
+  "best_val_loss": 0.6633411645889282,
+  "best_val_metrics": {
+    "auc": 0.75,
+    "acc": 0.75,
+    "imgs_per_sec": 51.254002210275566
+  }
+}
