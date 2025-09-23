@@ -1,0 +1,9 @@
+gradio>=4.0.0
+numpy
+pandas
+pillow
+scikit-learn
+timm
+torch
+torchvision
+lightgbm

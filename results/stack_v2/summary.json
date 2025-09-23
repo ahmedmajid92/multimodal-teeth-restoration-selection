@@ -14,7 +14,7 @@
     "f1": 0.8605
   },
   "thr": 0.4703,
-  "thr_mode": "max_acc",
+  "thr_mode": "max_f1",
   "thr_target": 0.8,
   "features": [
     "prob_tab",

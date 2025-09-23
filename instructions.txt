@@ -317,3 +317,17 @@ python experiments/vision_v2/stacking/train_stacker.py --vis-hard out/preds/vis_
 ###################  Generate Balanced Excel Data ##################
 
 python experiments/data_v2/make_balanced_splits.py --raw-xlsx data/excel/data.xlsx --processed-xlsx data/excel/data_processed.xlsx --dl-xlsx data/excel/data_dl.xlsx --dl-aug-xlsx data/excel/data_dl_augmented.xlsx --processed-xlsx-out data/excel/data_processed.xlsx --processed-csv-out data/excel/data_processed.csv --dl-xlsx-out data/excel/data_dl.xlsx --dl-csv-out data/excel/data_dl.csv --dl-aug-xlsx-out data/excel/data_dl_augmented.xlsx --dl-aug-csv-out data/excel/data_dl_augmented.csv --train-frac 0.70 --val-frac 0.15 --test-frac 0.15 --seed 42 --group-col origin_id --label-col y_majority
+
+
+######### Final Best Implementation ############
+python experiments/fusion_v1/stack_blend.py --xlsx_tab data/excel/data_processed.xlsx --oof_mm weights/mm_dualtask_v1/finalized/oof_val.csv --pred_mm weights/mm_dualtask_v1/finalized/pred_test.csv --oof_mil weights/mil_v1/oof_val.csv --pred_mil weights/mil_v1/pred_test.csv --outdir results/stack_v2 --thr-mode max_acc
+
+Threshold mode: max_acc | target: 0.8 | chosen thr: 0.470
+=== OOF === {'auc': 0.8935, 'acc': 0.8456, 'prec': 0.8644, 'rec': 0.9053, 'f1': 0.8844}
+=== TEST === {'auc': 0.8695, 'acc': 0.8223, 'prec': 0.8192, 'rec': 0.9062, 'f1': 0.8605}
+
+
+################                #################
+################  UI Gradio App #################
+
+python ui/gradio_app/app.py
