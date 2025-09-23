@@ -35,7 +35,6 @@ DEFAULTS = {
     "segmenter_model": REPO_ROOT / "models" / "segmenter" / "mask_rcnn_molar.pt",
     "pipeline_script": REPO_ROOT / "run_pipeline.py",
     "tmp_raw_dir": REPO_ROOT / "ui" / "tmp" / "raw_images",
-    "tmp_proc_dir": REPO_ROOT / "ui" / "tmp" / "processed_images",
     
     # ... your existing entries ...
     "tmp_proc_dir": REPO_ROOT / "ui" / "tmp" / "processed_images",
@@ -334,4 +333,11 @@ with gr.Blocks(theme=theme, css=BLUE_CSS, title="Dental Restoration Classifier")
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    # v4: just call queue() with no args (or omit it entirely)
+    demo.queue().launch(
+        server_name="127.0.0.1",
+        server_port=7860,
+        share=False,
+        show_error=True,
+        inbrowser=True
+    )

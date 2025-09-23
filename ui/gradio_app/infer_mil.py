@@ -6,6 +6,8 @@ from PIL import Image
 import timm
 import torchvision.transforms as T
 
+VERBOSE = False
+
 def make_tf(img_size, train=False):
     if train:
         return T.Compose([

@@ -1,15 +1,22 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import contextlib, os
+import contextlib, os, sys
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score
 try:
     import lightgbm as lgb
+    # Suppress LightGBM warnings globally
+    lgb.set_verbosity(-1)
 except Exception:
     lgb = None
 from sklearn.ensemble import GradientBoostingClassifier
+
+# Additional warning suppression for LightGBM
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='lightgbm')
+warnings.filterwarnings('ignore', message='.*No further splits with positive gain.*')
 
 TAB_FEATURES = [
     'depth','width','enamel_cracks','occlusal_load','carious_lesion',
@@ -67,25 +74,31 @@ class TabEnsemble:
                 params = dict(
                     objective='binary', learning_rate=0.03, n_estimators=700,
                     num_leaves=31, subsample=0.85, colsample_bytree=0.85,
-                    min_data_in_leaf=5, class_weight='balanced', random_state=42, n_jobs=-1
+                    min_data_in_leaf=5, class_weight='balanced', random_state=42, n_jobs=-1,
+                    verbosity=-1  # Suppress all LightGBM output
                 )
                 model = lgb.LGBMClassifier(**params)
                 try:
-                    model.fit(
-                        Xtr, ytr,
-                        eval_set=[(Xva, yva)],
-                        eval_metric='auc',
-                        categorical_feature=self.CAT,
-                        callbacks=[lgb.log_evaluation(period=0)]
-                    )
+                    # Suppress callback logging as well
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        model.fit(
+                            Xtr, ytr,
+                            eval_set=[(Xva, yva)],
+                            eval_metric='auc',
+                            categorical_feature=self.CAT,
+                            callbacks=[lgb.log_evaluation(period=0)]  # No logging
+                        )
                 except TypeError:
                     model.set_params(verbosity=-1)
-                    model.fit(
-                        Xtr, ytr,
-                        eval_set=[(Xva, yva)],
-                        eval_metric='auc',
-                        categorical_feature=self.CAT
-                    )
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        model.fit(
+                            Xtr, ytr,
+                            eval_set=[(Xva, yva)],
+                            eval_metric='auc',
+                            categorical_feature=self.CAT
+                        )
             else:
                 # Fallback
                 model = GradientBoostingClassifier(random_state=42)
@@ -113,7 +126,9 @@ class TabEnsemble:
         probs = []
         for m in self.models:
             if lgb is not None:
-                probs.append(m.predict_proba(df[self.FEATS])[:,1][0])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    probs.append(m.predict_proba(df[self.FEATS])[:,1][0])
             else:
                 probs.append(m.predict_proba(pd.get_dummies(df[self.FEATS], columns=self.CAT))[:,1][0])
         return float(np.mean(probs))
