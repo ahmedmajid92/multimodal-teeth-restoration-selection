@@ -26,6 +26,20 @@ CONT_FEATURES = ['depth','width']
 CAT_FEATURES  = ['enamel_cracks','occlusal_load','carious_lesion',
                  'opposing_type','adjacent_teeth','age_range','cervical_lesion']
 
+def _to_int_category(s: pd.Series) -> pd.Series:
+    """
+    Convert a series that may contain strings like '2.0', numbers, or NaN
+    into pandas nullable integer, then to 'category'.
+    """
+    # First coerce to numeric (handles '2.0' -> 2.0, '3' -> 3.0, etc.)
+    s_num = pd.to_numeric(s, errors='coerce')
+
+    # Round in case of 2.0/3.0 floats, then cast to pandas nullable Int64
+    s_int = s_num.round().astype('Int64')
+
+    # Finally convert to categorical (keeps codes stable for LightGBM/CatBoost workflows)
+    return s_int.astype('category')
+
 class TabEnsemble:
     def __init__(self, sheet_path, folds=5):
         self.path = Path(sheet_path)
@@ -47,10 +61,16 @@ class TabEnsemble:
             if c not in df.columns:
                 df[c] = np.nan
 
+        # Safely coerce continuous features to numeric
+        for c in ["depth", "width"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+
         # Dtypes & fills
         df[self.CONT] = df[self.CONT].astype(float).fillna(df[self.CONT].median(numeric_only=True))
         for c in self.CAT:
-            df[c] = df[c].fillna(-1).astype('int64').astype('category')
+            df[c] = df[c].fillna(-1)
+            df[c] = _to_int_category(df[c])
 
         # Drop constant
         nunq = {c:int(df[c].nunique()) for c in self.FEATS}
@@ -118,10 +138,16 @@ class TabEnsemble:
         row = {c: np.nan for c in TAB_FEATURES}
         row.update(x)
         df = pd.DataFrame([row])
+        
+        # Safely coerce continuous features to numeric
+        for c in ["depth", "width"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        
         # same preprocessing
         df[self.CONT] = df[self.CONT].astype(float)
         for c in self.CAT:
-            df[c] = df[c].astype('int64').astype('category')
+            df[c] = _to_int_category(df[c])
 
         probs = []
         for m in self.models:

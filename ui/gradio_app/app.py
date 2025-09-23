@@ -172,6 +172,25 @@ def _find_first_image_local(directory: Path, extensions=(".png", ".jpg", ".jpeg"
                 return str(directory / f)
     return None
 
+def _is_empty_field(v) -> bool:
+    """Return True if the clinical field should be considered 'not provided'."""
+    if v is None:
+        return True
+    # Numbers: treat 0 or NaN as empty
+    try:
+        import math
+        if isinstance(v, (int, float)):
+            return v == 0 or (isinstance(v, float) and math.isnan(v))
+    except Exception:
+        pass
+    # Strings: treat blank & common placeholders as empty
+    if isinstance(v, str):
+        s = v.strip().lower()
+        return s == "" or s in {"select", "select...", "none", "n/a", "na", "-"}
+    # Fallback: consider falsy values empty
+    return not bool(v)
+
+
 def predict_one(image: Image.Image,
                 no_crop: bool, no_rotate: bool,
                 seg_model_path: str,
@@ -211,18 +230,26 @@ def predict_one(image: Image.Image,
             no_rotate=no_rotate
         )
 
-    # 4) Tabular fields: allow all-or-none
+    # 4) Determine whether tabular features were fully provided
     tab_inputs = {
         "depth": depth, "width": width,
         "enamel_cracks": enamel_cracks, "occlusal_load": occlusal_load, "carious_lesion": carious_lesion,
         "opposing_type": opposing_type, "adjacent_teeth": adjacent_teeth, "age_range": age_range, "cervical_lesion": cervical_lesion
     }
-    any_filled = any(v is not None and v != "" for v in tab_inputs.values())
-    all_filled = all(v is not None and v != "" for v in tab_inputs.values())
+
+    # Treat 0/NaN/placeholder strings as NOT provided
+    provided_mask = {k: not _is_empty_field(v) for k, v in tab_inputs.items()}
+    any_filled = any(provided_mask.values())
+    all_filled = all(provided_mask.values())
 
     use_tabular = False
     if any_filled and not all_filled:
-        raise gr.Error("If you provide clinical fields, please provide **all** of them.")
+        missing = [k for k, ok in provided_mask.items() if not ok]
+        # Make the message more actionable, but still short
+        raise gr.Error(
+            "If you provide clinical fields, please provide **all** of them. "
+            f"Missing: {', '.join(missing)}"
+        )
     if all_filled:
         use_tabular = True
 
