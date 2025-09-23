@@ -1,0 +1,24 @@
+{
+  "oof": {
+    "auc": 0.8935,
+    "acc": 0.8456,
+    "prec": 0.8644,
+    "rec": 0.9053,
+    "f1": 0.8844
+  },
+  "test": {
+    "auc": 0.8695,
+    "acc": 0.8223,
+    "prec": 0.8192,
+    "rec": 0.9062,
+    "f1": 0.8605
+  },
+  "thr": 0.4703,
+  "thr_mode": "max_acc",
+  "thr_target": 0.8,
+  "features": [
+    "prob_tab",
+    "prob_mm",
+    "prob_mil"
+  ]
+}

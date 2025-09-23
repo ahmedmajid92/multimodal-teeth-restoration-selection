@@ -4,6 +4,7 @@
     "model": "tf_efficientnet_b4_ns",
     "img_size": 384,
     "val_auc": 0.7732021168624039,
+    "test_auc": 0.8088842975206612,
     "T": 2.4670863151550293,
     "t_star": 0.46,
     "val_cls": {
@@ -33,6 +34,7 @@
     "model": "tf_efficientnet_b4_ns",
     "img_size": 384,
     "val_auc": 0.9166447079490557,
+    "test_auc": 0.8287893236240345,
     "T": 1.2796697616577148,
     "t_star": 0.391,
     "val_cls": {
@@ -62,6 +64,7 @@
     "model": "tf_efficientnet_b4_ns",
     "img_size": 384,
     "val_auc": 0.9261865407319954,
+    "test_auc": 0.8483596293513649,
     "T": 0.983910858631134,
     "t_star": 0.307,
     "val_cls": {
@@ -91,6 +94,7 @@
     "model": "tf_efficientnet_b4_ns",
     "img_size": 384,
     "val_auc": 0.9233291412145168,
+    "test_auc": 0.8394160935483248,
     "T": 1.0271223783493042,
     "t_star": 0.428,
     "val_cls": {
@@ -120,6 +124,7 @@
     "model": "tf_efficientnet_b4_ns",
     "img_size": 384,
     "val_auc": 0.7688862652499017,
+    "test_auc": 0.8236192182473174,
     "T": 1.3503539562225342,
     "t_star": 0.584,
     "val_cls": {
