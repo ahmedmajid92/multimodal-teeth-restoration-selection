@@ -1,12 +1,15 @@
-import os, sys, json, subprocess, shutil
+import os, sys, json, shutil
 from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image
 import torch
-import json
-
+import utils
 import gradio as gr
+
+# --- Make subprocess + prints UTF-8 friendly on Windows ---
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 # Local imports
 from tab_model import TabEnsemble, TAB_FEATURES, CAT_FEATURES, CONT_FEATURES
@@ -16,7 +19,8 @@ from utils import (
 )
 
 # --- Paths anchored to repo root (…/multimodal-tooth-restoration-ai) ---
-REPO_ROOT = Path(__file__).resolve().parents[2]  # <repo>/ui/gradio_app/app.py -> parents[2] is repo root
+# <repo>/ui/gradio_app/app.py -> parents[2] is repo root
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULTS = {
     "xlsx_tab": REPO_ROOT / "data" / "excel" / "data_processed.xlsx",
@@ -35,9 +39,8 @@ DEFAULTS = {
     "segmenter_model": REPO_ROOT / "models" / "segmenter" / "mask_rcnn_molar.pt",
     "pipeline_script": REPO_ROOT / "run_pipeline.py",
     "tmp_raw_dir": REPO_ROOT / "ui" / "tmp" / "raw_images",
-    
-    # ... your existing entries ...
     "tmp_proc_dir": REPO_ROOT / "ui" / "tmp" / "processed_images",
+
     "stack_summary": REPO_ROOT / "results" / "stack_v2" / "summary.json"
 }
 
@@ -72,7 +75,6 @@ try:
 except Exception as e:
     dbg_init.append(f"MIL load failed: {e}")
 
-from tab_model import TabEnsemble
 try:
     tab_ens = TabEnsemble(sheet_path=DEFAULTS["xlsx_tab"], folds=5)
     dbg_init.append(f"TAB folds={tab_ens.folds}")
@@ -99,7 +101,7 @@ def load_overall_metrics():
     If the file is missing, fall back to the user's provided metrics.
     Returns (markdown_text, table_df)
     """
-    # Default fallback: your posted results
+    # Default fallback: user's posted results
     fallback = {
         "thr_mode": "max_acc",
         "thr_target": 0.8,
@@ -112,9 +114,8 @@ def load_overall_metrics():
     data = None
     if path.exists():
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # normalize keys between different stackers
             thr = data.get("thr") or data.get("threshold") or 0.470
             thr_mode = data.get("thr_mode", "max_acc")
             thr_target = data.get("thr_target", 0.80)
@@ -129,7 +130,6 @@ def load_overall_metrics():
     else:
         payload = fallback
 
-    # Build markdown
     md = (
         f"**Threshold mode:** `{payload['thr_mode']}`  |  "
         f"**target:** `{payload['thr_target']}`  |  "
@@ -146,15 +146,31 @@ def load_overall_metrics():
         f"F1: **{payload['test'].get('f1','-')}**"
     )
 
-    # Tabular view
     def row(d): return [d.get('auc','-'), d.get('acc','-'), d.get('prec','-'), d.get('rec','-'), d.get('f1','-')]
-    import pandas as pd
     df = pd.DataFrame(
         [row(payload['oof']), row(payload['test'])],
         columns=["AUC","ACC","PREC","REC","F1"],
         index=["OOF","TEST"]
     ).reset_index(names=["Split"])
     return md, df
+
+from pathlib import Path
+import os
+
+def _find_first_image_local(directory: Path, extensions=(".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif"), recursive=True):
+    directory = Path(directory)
+    if not directory.exists():
+        return None
+    if recursive:
+        for root, _, files in os.walk(directory):
+            for f in sorted(files):
+                if f.lower().endswith(extensions):
+                    return str(Path(root) / f)
+    else:
+        for f in sorted(os.listdir(directory)):
+            if f.lower().endswith(extensions):
+                return str(directory / f)
+    return None
 
 def predict_one(image: Image.Image,
                 no_crop: bool, no_rotate: bool,
@@ -169,30 +185,33 @@ def predict_one(image: Image.Image,
     # 1) Validate image resolution
     ok, msg = check_image_resolution(image, min_size=512)
     if not ok:
-        return gr.Warning(msg), None, None, None
+        raise gr.Error(msg)
 
-    # 2) Persist uploaded image into a temp raw dir
-    ensure_dir(DEFAULTS["tmp_raw_dir"])
-    ensure_dir(DEFAULTS["tmp_proc_dir"])
-    raw_path = DEFAULTS["tmp_raw_dir"] / "case.jpg"
-    image.save(raw_path)
+    # 2) Per-session temp dirs + persist uploaded image
+    base_raw, base_proc = DEFAULTS["tmp_raw_dir"], DEFAULTS["tmp_proc_dir"]
+    raw_dir, proc_dir, _ = utils.make_session_dirs(base_raw, base_proc)
+    try:
+        _ = utils.save_uploaded_image_to_dir(image, raw_dir, filename="input.png")
+    except Exception as e:
+        raise gr.Error(f"Failed to save uploaded image: {e}")
 
-    # 3) Run preprocessing pipeline with user flags (only if image models available)
-    processed_path = None
-    if (mm_ens is not None and getattr(mm_ens, 'num_folds', 0) > 0) or (mil_ens is not None and getattr(mil_ens, 'num_folds', 0) > 0):
+    # 3) Run preprocessing (now returns: produced_dir, first_img, logs)
+    have_mm = (mm_ens is not None and getattr(mm_ens, 'num_folds', 0) > 0)
+    have_mil = (mil_ens is not None and getattr(mil_ens, 'num_folds', 0) > 0)
+
+    produced_dir, first_img, pre_log = (None, None, "")
+    if have_mm or have_mil:
         seg_model = Path(seg_model_path) if seg_model_path else DEFAULTS["segmenter_model"]
-        processed_path = run_preprocessing_pipeline(
+        produced_dir, first_img, pre_log = utils.run_preprocessing_pipeline(
             pipeline_script=DEFAULTS["pipeline_script"],
-            input_dir=DEFAULTS["tmp_raw_dir"],
-            output_dir=DEFAULTS["tmp_proc_dir"],
+            input_dir=raw_dir,
+            output_dir=proc_dir,
             segmenter_path=seg_model,
             no_crop=no_crop,
             no_rotate=no_rotate
         )
-        if processed_path is None or not processed_path.exists():
-            return gr.Error("Preprocessing failed. Please check your segmentation model path and pipeline."), None, None, None
 
-    # 4) Determine whether tabular features were fully provided
+    # 4) Tabular fields: allow all-or-none
     tab_inputs = {
         "depth": depth, "width": width,
         "enamel_cracks": enamel_cracks, "occlusal_load": occlusal_load, "carious_lesion": carious_lesion,
@@ -203,34 +222,50 @@ def predict_one(image: Image.Image,
 
     use_tabular = False
     if any_filled and not all_filled:
-        return gr.Warning("If you provide numeric/clinical fields, please provide **all** of them."), None, None, None
+        raise gr.Error("If you provide clinical fields, please provide **all** of them.")
     if all_filled:
         use_tabular = True
 
-    # 5) Inference per stream (skip gracefully if a stream isn't loaded)
+    # If no streams can run (no image outputs and no tabular), fail early with log
+    if (not use_tabular) and (not first_img) and (not produced_dir):
+        raise gr.Error(
+            "No model streams ran. Likely no preprocessed images were produced and no tabular inputs were provided.\n\n"
+            f"Preprocessing log:\n{pre_log or '(empty)'}"
+        )
+
+    # 5) Inference per stream
     prob_mm, mm_dbg = (None, "MM not loaded")
     prob_mil, mil_dbg = (None, "MIL not loaded")
     prob_tab = None
 
-    if mm_ens is not None and getattr(mm_ens, 'num_folds', 0) > 0:
-        prob_mm, mm_dbg = mm_ens.predict(processed_path, tab_inputs if use_tabular else None)
-    if mil_ens is not None and getattr(mil_ens, 'num_folds', 0) > 0:
-        prob_mil, mil_dbg = mil_ens.predict(processed_path)
+    # MM expects a single image path
+    if have_mm and first_img and Path(first_img).is_file():
+        prob_mm, mm_dbg = mm_ens.predict(first_img, tab_inputs if use_tabular else None)
+
+    # MIL expects a folder containing one or more images
+    if have_mil and produced_dir and Path(produced_dir).is_dir():
+        prob_mil, mil_dbg = mil_ens.predict(produced_dir)
+
+    # Tabular stream
     if use_tabular and tab_ens is not None:
         prob_tab = tab_ens.predict_one(tab_inputs)
 
-    # Ensure at least one stream present
     available = [p for p in [prob_mm, prob_mil, prob_tab] if p is not None]
     if not available:
-        return gr.Error("No model streams available. Check your weights paths."), None, None, "\n".join(dbg_init)
+        # Give the preprocessing log to help you debug the pipeline/segmenter
+        raise gr.Error(
+            "No usable predictions returned from any stream.\n\n"
+            f"MM dbg: {mm_dbg}\nMIL dbg: {mil_dbg}\n\n"
+            f"Preprocessing log:\n{pre_log or '(empty)'}"
+        )
 
-    # 6) Stacking with appropriate combination
+    # 6) Stacking / fallback
     if stacker is not None:
-        # Choose threshold mode from UI
         stacker.set_threshold_mode(threshold_mode, DEFAULTS["thr_target"])
-        prob_final, chosen_thr, details = stacker.predict_single(prob_mm=prob_mm, prob_mil=prob_mil, prob_tab=prob_tab)
+        prob_final, chosen_thr, details = stacker.predict_single(
+            prob_mm=prob_mm, prob_mil=prob_mil, prob_tab=prob_tab
+        )
     else:
-        # Fallback: simple averaging of available streams
         prob_final = sum(available) / len(available)
         chosen_thr = 0.5
         details = {"mode": "fallback_average"}
@@ -238,7 +273,7 @@ def predict_one(image: Image.Image,
     label = "Indirect" if prob_final >= chosen_thr else "Direct"
     prob_pct = f"{prob_final:.3f} (thr={chosen_thr:.3f})"
 
-    # 7) Build a concise contributions table
+    # 7) Contributions table
     rows = []
     if prob_tab is not None:
         rows.append(["Tabular (LightGBM)", f"{prob_tab:.3f}"])
@@ -249,7 +284,7 @@ def predict_one(image: Image.Image,
 
     contrib_df = pd.DataFrame(rows, columns=["Stream", "Probability"])
 
-    # 8) Prepare a friendly message
+    # 8) Message
     stacker_mode = stacker.thr_mode if stacker else "fallback"
     msg = (
         f"**Predicted:** {label}\n\n"
@@ -257,7 +292,11 @@ def predict_one(image: Image.Image,
         f"**Threshold mode:** {stacker_mode}\n"
         f"**Active streams:** {len(available)}\n"
     )
-    return msg, contrib_df, processed_path, f"MM: {mm_dbg}\nMIL: {mil_dbg}"
+
+    # Display the first processed image (or None)
+    out_image_path = str(first_img) if first_img and Path(first_img).exists() else None
+    return msg, contrib_df, out_image_path, f"MM: {mm_dbg}\nMIL: {mil_dbg}\n\nPreproc log:\n{pre_log}"
+
 
 # ----------------------- Build Gradio UI -----------------------
 
@@ -310,8 +349,8 @@ with gr.Blocks(theme=theme, css=BLUE_CSS, title="Dental Restoration Classifier")
             out_table = gr.Dataframe(label="Per-Stream Probabilities", interactive=False)
             out_image = gr.Image(type="filepath", label="Preprocessed image")
             out_dbg = gr.Textbox(label="Debug info", lines=6)
-    
-        gr.Markdown("---")
+
+    gr.Markdown("---")
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -333,9 +372,9 @@ with gr.Blocks(theme=theme, css=BLUE_CSS, title="Dental Restoration Classifier")
     )
 
 if __name__ == "__main__":
-    # v4: just call queue() with no args (or omit it entirely)
+    # Minimal queue() call for Gradio v4; concurrency_count was removed.
     demo.queue().launch(
-        server_name="127.0.0.1",
+        server_name="127.0.0.1",   # bind to loopback
         server_port=7860,
         share=False,
         show_error=True,
