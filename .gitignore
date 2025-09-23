@@ -75,3 +75,6 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+
+# UI temporary processing files
+ui/tmp/

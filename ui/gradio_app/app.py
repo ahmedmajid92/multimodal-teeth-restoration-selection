@@ -12,7 +12,7 @@ os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 # Local imports
-from tab_model import TabEnsemble, TAB_FEATURES, CAT_FEATURES, CONT_FEATURES
+from tab_model import TabEnsemble
 from utils import (
     ensure_dir, load_feature_choices_from_sheet, check_image_resolution,
     run_preprocessing_pipeline, build_tab_vector, BLUE_CSS
@@ -41,8 +41,22 @@ DEFAULTS = {
     "tmp_raw_dir": REPO_ROOT / "ui" / "tmp" / "raw_images",
     "tmp_proc_dir": REPO_ROOT / "ui" / "tmp" / "processed_images",
 
-    "stack_summary": REPO_ROOT / "results" / "stack_v2" / "summary.json"
+    "stack_summary": REPO_ROOT / "results" / "stack_v2" / "summary.json",
+    "tab_ckpt_dir": REPO_ROOT / "weights" / "tab_v1",
 }
+
+# Tabular feature definitions (kept here since tab_model no longer exports them)
+CONT_FEATURES = ["depth", "width"]
+CAT_FEATURES = [
+    "enamel_cracks",
+    "occlusal_load",
+    "carious_lesion",
+    "opposing_type",
+    "adjacent_teeth",
+    "age_range",
+    "cervical_lesion",
+]
+TAB_FEATURES = CONT_FEATURES + CAT_FEATURES
 
 # --- Load feature choices dynamically from your sheet for the form ---
 try:
@@ -76,10 +90,14 @@ except Exception as e:
     dbg_init.append(f"MIL load failed: {e}")
 
 try:
-    tab_ens = TabEnsemble(sheet_path=DEFAULTS["xlsx_tab"], folds=5)
-    dbg_init.append(f"TAB folds={tab_ens.folds}")
+    tab_ens = TabEnsemble.from_folder(DEFAULTS["tab_ckpt_dir"])
+    if tab_ens is not None:
+        dbg_init.append(f"TAB folds={tab_ens.num_folds}")
+    else:
+        dbg_init.append("TAB not found")
 except Exception as e:
     dbg_init.append(f"TAB init failed: {e}")
+
 
 from stack_meta import Stacker
 try:
@@ -191,102 +209,119 @@ def _is_empty_field(v) -> bool:
     return not bool(v)
 
 
-def predict_one(image: Image.Image,
-                no_crop: bool, no_rotate: bool,
-                seg_model_path: str,
-                # tab fields (all optional collectively, but all-or-none)
-                depth, width,
-                enamel_cracks, occlusal_load, carious_lesion,
-                opposing_type, adjacent_teeth, age_range, cervical_lesion,
-                threshold_mode):
+def predict_one(
+    image: Image.Image,
+    no_crop: bool, no_rotate: bool,
+    seg_model_path: str,
+    # tab fields (all optional collectively, but all-or-none)
+    depth, width,
+    enamel_cracks, occlusal_load, carious_lesion,
+    opposing_type, adjacent_teeth, age_range, cervical_lesion,
+    threshold_mode
+):
     """Main callback for Gradio button."""
 
-    # 1) Validate image resolution
-    ok, msg = check_image_resolution(image, min_size=512)
-    if not ok:
-        raise gr.Error(msg)
-
-    # 2) Per-session temp dirs + persist uploaded image
-    base_raw, base_proc = DEFAULTS["tmp_raw_dir"], DEFAULTS["tmp_proc_dir"]
-    raw_dir, proc_dir, _ = utils.make_session_dirs(base_raw, base_proc)
-    try:
-        _ = utils.save_uploaded_image_to_dir(image, raw_dir, filename="input.png")
-    except Exception as e:
-        raise gr.Error(f"Failed to save uploaded image: {e}")
-
-    # 3) Run preprocessing (now returns: produced_dir, first_img, logs)
+    # ---- 0) Gather model availability
     have_mm = (mm_ens is not None and getattr(mm_ens, 'num_folds', 0) > 0)
     have_mil = (mil_ens is not None and getattr(mil_ens, 'num_folds', 0) > 0)
 
-    produced_dir, first_img, pre_log = (None, None, "")
-    if have_mm or have_mil:
+    # ---- 1) Collect clinical inputs as strings (tab_model will coerce)
+    tab_inputs = {
+        "depth": depth, "width": width,
+        "enamel_cracks": enamel_cracks, "occlusal_load": occlusal_load, "carious_lesion": carious_lesion,
+        "opposing_type": opposing_type, "adjacent_teeth": adjacent_teeth,
+        "age_range": age_range, "cervical_lesion": cervical_lesion
+    }
+
+    def _is_blank(v):
+        return v is None or (isinstance(v, str) and v.strip() == "")
+
+    any_filled = any(not _is_blank(v) for v in tab_inputs.values())
+    all_filled = all(not _is_blank(v) for v in tab_inputs.values())
+
+    use_tabular = False
+    if any_filled and not all_filled:
+        # User started filling—require all
+        raise gr.Error("If you provide clinical fields, please provide **all** of them.")
+    if all_filled:
+        use_tabular = True
+
+    # ---- 2) If image-required streams are available but no image was provided,
+    #         we silently skip image streams and run tab-only if possible.
+    run_image_streams = (have_mm or have_mil) and (image is not None)
+
+    # If the user provided NO image and NO tabular fields, error early.
+    if not run_image_streams and not use_tabular:
+        raise gr.Error("Please upload an image or fill all clinical fields (or both).")
+
+    # ---- 3) If we will run image streams, validate & save the raw image to a session dir,
+    #         then call the preprocessing pipeline.
+    produced_dir = None
+    first_processed_img = None
+    pipe_log = ""
+    if run_image_streams:
+        ok, msg = check_image_resolution(image, min_size=512)
+        if not ok:
+            raise gr.Error(msg)
+
+        # session-scoped dirs
+        base_raw = DEFAULTS["tmp_raw_dir"]
+        base_proc = DEFAULTS["tmp_proc_dir"]
+        raw_dir, proc_dir, sid = utils.make_session_dirs(base_raw, base_proc)
+
+        # save uploaded image under session
+        try:
+            _ = utils.save_uploaded_image_to_dir(image, raw_dir, filename="input.png")
+        except Exception as e:
+            raise gr.Error(f"Failed to save uploaded image: {e}")
+
         seg_model = Path(seg_model_path) if seg_model_path else DEFAULTS["segmenter_model"]
-        produced_dir, first_img, pre_log = utils.run_preprocessing_pipeline(
+        produced_dir, first_processed_img, pipe_log = utils.run_preprocessing_pipeline(
             pipeline_script=DEFAULTS["pipeline_script"],
             input_dir=raw_dir,
             output_dir=proc_dir,
             segmenter_path=seg_model,
             no_crop=no_crop,
-            no_rotate=no_rotate
+            no_rotate=no_rotate,
         )
 
-    # 4) Determine whether tabular features were fully provided
-    tab_inputs = {
-        "depth": depth, "width": width,
-        "enamel_cracks": enamel_cracks, "occlusal_load": occlusal_load, "carious_lesion": carious_lesion,
-        "opposing_type": opposing_type, "adjacent_teeth": adjacent_teeth, "age_range": age_range, "cervical_lesion": cervical_lesion
-    }
+        if produced_dir is None:
+            # Preproc failed; if we still have tabular, continue with tab-only
+            if not use_tabular:
+                raise gr.Error(
+                    "Preprocessing failed — I couldn't find any processed images.\n\nDetails:\n" + pipe_log
+                )
+            # Disable image streams since preproc produced nothing
+            have_mm = False
+            have_mil = False
+            run_image_streams = False
 
-    # Treat 0/NaN/placeholder strings as NOT provided
-    provided_mask = {k: not _is_empty_field(v) for k, v in tab_inputs.items()}
-    any_filled = any(provided_mask.values())
-    all_filled = all(provided_mask.values())
-
-    use_tabular = False
-    if any_filled and not all_filled:
-        missing = [k for k, ok in provided_mask.items() if not ok]
-        # Make the message more actionable, but still short
-        raise gr.Error(
-            "If you provide clinical fields, please provide **all** of them. "
-            f"Missing: {', '.join(missing)}"
-        )
-    if all_filled:
-        use_tabular = True
-
-    # If no streams can run (no image outputs and no tabular), fail early with log
-    if (not use_tabular) and (not first_img) and (not produced_dir):
-        raise gr.Error(
-            "No model streams ran. Likely no preprocessed images were produced and no tabular inputs were provided.\n\n"
-            f"Preprocessing log:\n{pre_log or '(empty)'}"
-        )
-
-    # 5) Inference per stream
-    prob_mm, mm_dbg = (None, "MM not loaded")
-    prob_mil, mil_dbg = (None, "MIL not loaded")
+    # ---- 4) Run inference per stream (skip gracefully if a stream isn't loaded)
+    prob_mm, mm_dbg = (None, "MM skipped")
+    prob_mil, mil_dbg = (None, "MIL skipped")
     prob_tab = None
 
-    # MM expects a single image path
-    if have_mm and first_img and Path(first_img).is_file():
-        prob_mm, mm_dbg = mm_ens.predict(first_img, tab_inputs if use_tabular else None)
+    # MM needs a *directory* or an *image path*, we pass the produced_dir
+    if run_image_streams and have_mm:
+    # MM needs a single image path
+        prob_mm, mm_dbg = mm_ens.predict(first_processed_img, tab_inputs if use_tabular else None)
 
-    # MIL expects a folder containing one or more images
-    if have_mil and produced_dir and Path(produced_dir).is_dir():
+    if run_image_streams and have_mil:
+        # MIL consumes a directory of images
         prob_mil, mil_dbg = mil_ens.predict(produced_dir)
 
-    # Tabular stream
+
     if use_tabular and tab_ens is not None:
         prob_tab = tab_ens.predict_one(tab_inputs)
 
-    available = [p for p in [prob_mm, prob_mil, prob_tab] if p is not None]
+    available = [p for p in (prob_mm, prob_mil, prob_tab) if p is not None]
     if not available:
-        # Give the preprocessing log to help you debug the pipeline/segmenter
         raise gr.Error(
-            "No usable predictions returned from any stream.\n\n"
-            f"MM dbg: {mm_dbg}\nMIL dbg: {mil_dbg}\n\n"
-            f"Preprocessing log:\n{pre_log or '(empty)'}"
+            "No model streams ran. Likely no preprocessed images were produced and no tabular inputs were provided.\n\n"
+            f"Preprocessing log:\n{pipe_log or '(no log)'}"
         )
 
-    # 6) Stacking / fallback
+    # ---- 5) Stacking with appropriate combination
     if stacker is not None:
         stacker.set_threshold_mode(threshold_mode, DEFAULTS["thr_target"])
         prob_final, chosen_thr, details = stacker.predict_single(
@@ -300,10 +335,10 @@ def predict_one(image: Image.Image,
     label = "Indirect" if prob_final >= chosen_thr else "Direct"
     prob_pct = f"{prob_final:.3f} (thr={chosen_thr:.3f})"
 
-    # 7) Contributions table
+    # ---- 6) Contributions table
     rows = []
     if prob_tab is not None:
-        rows.append(["Tabular (LightGBM)", f"{prob_tab:.3f}"])
+        rows.append(["Tabular (LightGBM/GBM)", f"{prob_tab:.3f}"])
     if prob_mm is not None:
         rows.append(["MM (Image+Tab)", f"{prob_mm:.3f}"])
     if prob_mil is not None:
@@ -311,7 +346,7 @@ def predict_one(image: Image.Image,
 
     contrib_df = pd.DataFrame(rows, columns=["Stream", "Probability"])
 
-    # 8) Message
+    # ---- 7) Message + preview image (first processed) if any
     stacker_mode = stacker.thr_mode if stacker else "fallback"
     msg = (
         f"**Predicted:** {label}\n\n"
@@ -320,9 +355,9 @@ def predict_one(image: Image.Image,
         f"**Active streams:** {len(available)}\n"
     )
 
-    # Display the first processed image (or None)
-    out_image_path = str(first_img) if first_img and Path(first_img).exists() else None
-    return msg, contrib_df, out_image_path, f"MM: {mm_dbg}\nMIL: {mil_dbg}\n\nPreproc log:\n{pre_log}"
+    out_image_path = str(first_processed_img) if first_processed_img else None
+    debug_txt = f"MM: {mm_dbg}\nMIL: {mil_dbg}"
+    return msg, contrib_df, out_image_path, debug_txt
 
 
 # ----------------------- Build Gradio UI -----------------------

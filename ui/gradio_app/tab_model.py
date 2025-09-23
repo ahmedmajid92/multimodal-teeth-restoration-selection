@@ -1,160 +1,159 @@
+# ui/gradio_app/tab_model.py
+import json
 from pathlib import Path
+from typing import Dict, List, Optional
+
+import joblib
 import numpy as np
 import pandas as pd
-import contextlib, os, sys
-from sklearn.model_selection import GroupKFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import roc_auc_score
-try:
-    import lightgbm as lgb
-    # Suppress LightGBM warnings globally
-    lgb.set_verbosity(-1)
-except Exception:
-    lgb = None
-from sklearn.ensemble import GradientBoostingClassifier
 
-# Additional warning suppression for LightGBM
-import warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='lightgbm')
-warnings.filterwarnings('ignore', message='.*No further splits with positive gain.*')
 
-TAB_FEATURES = [
-    'depth','width','enamel_cracks','occlusal_load','carious_lesion',
-    'opposing_type','adjacent_teeth','age_range','cervical_lesion'
-]
-CONT_FEATURES = ['depth','width']
-CAT_FEATURES  = ['enamel_cracks','occlusal_load','carious_lesion',
-                 'opposing_type','adjacent_teeth','age_range','cervical_lesion']
+def _coerce_numeric(x) -> float:
+    """Safely coerce text/number like '2', '2.0' to float; NaN on failure."""
+    try:
+        return float(str(x).strip())
+    except Exception:
+        return np.nan
 
-def _to_int_category(s: pd.Series) -> pd.Series:
+
+def _align_X_to_model(X: pd.DataFrame, model) -> pd.DataFrame:
     """
-    Convert a series that may contain strings like '2.0', numbers, or NaN
-    into pandas nullable integer, then to 'category'.
+    Ensure X has exactly the columns (order + presence) the model was trained on.
+    Missing columns are created and filled with 0; extra columns are dropped.
     """
-    # First coerce to numeric (handles '2.0' -> 2.0, '3' -> 3.0, etc.)
-    s_num = pd.to_numeric(s, errors='coerce')
+    if hasattr(model, "feature_names_in_"):
+        cols = list(model.feature_names_in_)
+        X = X.reindex(columns=cols, fill_value=0)
+    return X
 
-    # Round in case of 2.0/3.0 floats, then cast to pandas nullable Int64
-    s_int = s_num.round().astype('Int64')
-
-    # Finally convert to categorical (keeps codes stable for LightGBM/CatBoost workflows)
-    return s_int.astype('category')
 
 class TabEnsemble:
-    def __init__(self, sheet_path, folds=5):
-        self.path = Path(sheet_path)
-        self.folds = folds
-        self.models = []
-        self.FEATS = TAB_FEATURES.copy()
-        self.CAT = CAT_FEATURES.copy()
-        self.CONT = CONT_FEATURES.copy()
-        self._train_kfold()
+    """
+    Loads a small GradientBoosting (or similar) ensemble trained on tabular features.
+    Key improvement: robust feature alignment to the model's training
+    one-hot columns using model.feature_names_in_ (sklearn >=1.0).
+    """
 
-    def _train_kfold(self):
-        if self.path.suffix.lower() == ".xlsx":
-            df = pd.read_excel(self.path)
-        else:
-            df = pd.read_csv(self.path)
+    # Base feature lists (raw)
+    NUM = ["depth", "width"]
+    CAT = [
+        "enamel_cracks",
+        "occlusal_load",
+        "carious_lesion",
+        "opposing_type",
+        "adjacent_teeth",
+        "age_range",
+        "cervical_lesion",
+    ]
 
-        # Ensure cols exist
-        for c in self.FEATS:
-            if c not in df.columns:
-                df[c] = np.nan
+    def __init__(self, models: List, meta: Optional[dict] = None):
+        self.models = models
+        self.num_folds = len(models)
+        self.meta = meta or {}
 
-        # Safely coerce continuous features to numeric
-        for c in ["depth", "width"]:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
+        # Gather required columns from all models (union) to be safe
+        req_cols = set()
+        for m in self.models:
+            cols = getattr(m, "feature_names_in_", None)
+            if cols is not None:
+                req_cols.update(list(cols))
+        self.required_columns = sorted(list(req_cols)) if req_cols else None
 
-        # Dtypes & fills
-        df[self.CONT] = df[self.CONT].astype(float).fillna(df[self.CONT].median(numeric_only=True))
-        for c in self.CAT:
-            df[c] = df[c].fillna(-1)
-            df[c] = _to_int_category(df[c])
+    @classmethod
+    def from_folder(cls, folder: Path) -> Optional["TabEnsemble"]:
+        folder = Path(folder)
+        if not folder.exists():
+            return None
 
-        # Drop constant
-        nunq = {c:int(df[c].nunique()) for c in self.FEATS}
-        const_cols = [c for c,n in nunq.items() if n<=1]
-        self.FEATS = [c for c in self.FEATS if c not in const_cols]
-        self.CONT  = [c for c in self.CONT  if c not in const_cols]
-        self.CAT   = [c for c in self.CAT   if c not in const_cols]
+        models = []
+        meta = None
+        for p in sorted(folder.glob("tab_fold*.pkl")):
+            try:
+                models.append(joblib.load(p))
+            except Exception:
+                pass
+        if not models:
+            return None
 
-        df_tv = df[df['split'].isin(['train','val'])].reset_index(drop=True)
-        groups = df_tv.get('origin_id', df_tv.get('image_id', df_tv.index.values))
+        meta_path = folder / "tab_meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                meta = None
 
-        gkf = GroupKFold(n_splits=self.folds)
-        idxs = list(gkf.split(df_tv, groups=groups))
+        return cls(models=models, meta=meta)
 
-        for fold, (tr,va) in enumerate(idxs):
-            tr_df = df_tv.iloc[tr]; va_df = df_tv.iloc[va]
-            Xtr, ytr = tr_df[self.FEATS], tr_df['y_majority'].values
-            Xva, yva = va_df[self.FEATS], va_df['y_majority'].values
+    # -----------------------------
+    # Public: predict one sample
+    # -----------------------------
+    def predict_one(self, features: Dict[str, object]) -> float:
+        """
+        features: dict with keys in NUM + CAT. Values may be strings like '2.0'.
+        Returns calibrated probability of "Indirect".
+        """
+        # 1) Build single-row DataFrame
+        raw = {}
+        # numeric
+        for k in self.NUM:
+            raw[k] = _coerce_numeric(features.get(k, None))
+        # categorical — keep as strings so one-hot names match training like "adjacent_teeth_-1"
+        for k in self.CAT:
+            v = features.get(k, "")
+            raw[k] = "" if v is None else str(v).strip()
 
-            if lgb is not None:
-                params = dict(
-                    objective='binary', learning_rate=0.03, n_estimators=700,
-                    num_leaves=31, subsample=0.85, colsample_bytree=0.85,
-                    min_data_in_leaf=5, class_weight='balanced', random_state=42, n_jobs=-1,
-                    verbosity=-1  # Suppress all LightGBM output
-                )
-                model = lgb.LGBMClassifier(**params)
-                try:
-                    # Suppress callback logging as well
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        model.fit(
-                            Xtr, ytr,
-                            eval_set=[(Xva, yva)],
-                            eval_metric='auc',
-                            categorical_feature=self.CAT,
-                            callbacks=[lgb.log_evaluation(period=0)]  # No logging
-                        )
-                except TypeError:
-                    model.set_params(verbosity=-1)
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        model.fit(
-                            Xtr, ytr,
-                            eval_set=[(Xva, yva)],
-                            eval_metric='auc',
-                            categorical_feature=self.CAT
-                        )
-            else:
-                # Fallback
-                model = GradientBoostingClassifier(random_state=42)
-                Xtr = pd.get_dummies(Xtr, columns=self.CAT)
-                Xva = pd.get_dummies(Xva, columns=self.CAT)
-                model.fit(Xtr, ytr)
-            self.models.append(model)
+        df = pd.DataFrame([raw])
 
-    def predict_one(self, tab_dict: dict) -> float:
-        # Validate full fields
-        x = {}
-        for c in TAB_FEATURES:
-            if c not in tab_dict:
-                raise ValueError(f"Missing feature: {c}")
-            x[c] = tab_dict[c]
-        # Build row
-        row = {c: np.nan for c in TAB_FEATURES}
-        row.update(x)
-        df = pd.DataFrame([row])
-        
-        # Safely coerce continuous features to numeric
-        for c in ["depth", "width"]:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-        
-        # same preprocessing
-        df[self.CONT] = df[self.CONT].astype(float)
-        for c in self.CAT:
-            df[c] = _to_int_category(df[c])
+        # 2) One-hot encode categoricals
+        df_dum = pd.get_dummies(df[self.NUM + self.CAT], columns=self.CAT, dummy_na=False)
 
+        # 3) (Optional) align to the union of training columns for a stable base
+        X_base = self._align_to_required(df_dum)
+
+        # 4) Average probs across folds, aligning to EACH model's feature_names_in_
         probs = []
         for m in self.models:
-            if lgb is not None:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    probs.append(m.predict_proba(df[self.FEATS])[:,1][0])
-            else:
-                probs.append(m.predict_proba(pd.get_dummies(df[self.FEATS], columns=self.CAT))[:,1][0])
+            Xm = _align_X_to_model(X_base.copy(), m)  # <- per-model alignment (fixes name mismatch)
+            # Ensure numeric dtype
+            for c in Xm.columns:
+                Xm[c] = pd.to_numeric(Xm[c], errors="coerce").fillna(0.0)
+            p = m.predict_proba(Xm)[:, 1][0]
+            probs.append(float(p))
         return float(np.mean(probs))
+
+    # -----------------------------
+    # Helpers
+    # -----------------------------
+    def _align_to_required(self, df_dum: pd.DataFrame) -> pd.DataFrame:
+        """
+        Make df_dum match the training-time columns (union across folds):
+          - add any missing required columns (zeros)
+          - drop any unexpected columns
+          - order columns exactly like training (union order)
+        If feature_names_in_ is not available (older sklearn),
+        we fall back to current df_dum columns (best effort).
+        """
+        if not self.required_columns:
+            # Best-effort; at least ensure numeric are present
+            return df_dum
+
+        X = df_dum.copy()
+
+        # Add missing columns with zeros
+        for col in self.required_columns:
+            if col not in X.columns:
+                X[col] = 0.0
+
+        # Drop extras
+        extras = [c for c in X.columns if c not in self.required_columns]
+        if extras:
+            X = X.drop(columns=extras)
+
+        # Reorder
+        X = X[self.required_columns]
+
+        # Ensure numeric dtype
+        for c in X.columns:
+            X[c] = pd.to_numeric(X[c], errors="coerce").fillna(0.0)
+
+        return X
