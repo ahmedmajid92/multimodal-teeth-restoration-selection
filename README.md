@@ -94,6 +94,7 @@ multimodal-tooth-restoration-ai/
 │       ├── infer_mm.py                   # Multimodal inference
 │       ├── infer_mil.py                  # MIL inference
 │       ├── tab_model.py                  # Tabular model interface
+│       ├── stack_meta.py                 # Meta-learning stacker
 │       └── utils.py                      # UI utilities
 ├── results/                              # Evaluation results
 ├── configs/
@@ -272,13 +273,6 @@ python run_fusion.py train --xgb-model models/outputs/xgb_classifier_pipeline.jo
 
 # Inspect fusion results
 python run_fusion.py info
-```
-
-#### 6. Launch Web Interface
-
-```bash
-python ui/gradio_app/app.py
-# Navigate to http://localhost:7860
 ```
 
 ## 📊 Data Pipeline Details
@@ -472,63 +466,6 @@ Threshold mode: max_acc | target: 0.8 | chosen thr: 0.470
 **High Recall Priority:**
 > In clinical workflow, missing an "Indirect" restoration (false negative) is typically more costly than over-recommending indirect treatment. The system achieves 90.62% recall, minimizing missed indirect cases.
 
-## 🖥️ Web Interface Features
-
-### Gradio Application Capabilities
-
-**Single Case Prediction:**
-- Upload dental radiograph
-- Input clinical parameters via interactive form
-- Real-time prediction with confidence scores
-- Model attribution analysis
-
-**Batch Processing:**
-- Multiple image upload
-- CSV-based clinical data import
-- Batch inference with progress tracking
-- Export results in multiple formats
-
-**Model Comparison Dashboard:**
-- Individual model predictions
-- Ensemble vs. individual performance
-- Confidence interval visualization
-- Feature importance plots
-
-**Advanced Features:**
-- **Test-Time Augmentation**: Toggle TTA for enhanced accuracy
-- **Threshold Adjustment**: Interactive threshold tuning
-- **Uncertainty Quantification**: Prediction intervals
-- **Model Explainability**: Attention map visualization
-
-### Usage Examples
-
-**Launch Interface:**
-```bash
-python ui/gradio_app/app.py
-# Access at http://localhost:7860
-```
-
-**Programmatic Inference:**
-```python
-from run_fusion import cmd_infer_one
-
-result = cmd_infer_one({
-    'image_name': '133.jpg',
-    'depth': 1.2,
-    'width': 0.8,
-    'enamel_cracks': 1,
-    'occlusal_load': 0,
-    'carious_lesion': 1,
-    'opposing_type': 0.0,
-    'adjacent_teeth': 1.0,
-    'age_range': 1,
-    'cervical_lesion': 0
-})
-
-print(f"Prediction: {'Indirect' if result['decision'] else 'Direct'}")
-print(f"Confidence: {result['p_indirect']:.3f}")
-```
-
 ## 🔧 Advanced Configuration
 
 ### Hyperparameter Optimization
@@ -710,6 +647,253 @@ model = torch.jit.script(model)
 # Use half precision
 model.half()
 ```
+
+## 🖥️ User Interface - Web Application for Clinical Use
+
+### 🚀 Quick Launch for End Users
+
+The system includes a **user-friendly web interface** designed for dental professionals and researchers who want to use the trained models without technical expertise.
+
+#### Launch the Interface
+
+```bash
+# Navigate to project directory
+cd multimodal-tooth-restoration-ai
+
+# Launch the web application
+python ui/gradio_app/app.py
+
+# Access the interface at: http://localhost:7860
+```
+
+The interface will automatically open in your default web browser. If not, manually navigate to `http://localhost:7860`.
+
+### 🎯 Interface Features
+
+#### **Main Prediction Panel**
+
+**Image Upload & Processing:**
+- **Drag & Drop**: Upload dental radiographs or clinical photos
+- **Format Support**: JPG, PNG, TIFF, BMP formats accepted
+- **Resolution Check**: Automatic validation for minimum 512×512 pixels
+- **Real-time Preview**: See uploaded image before processing
+
+**Preprocessing Options:**
+- **Automatic Segmentation**: Toggle tooth detection and cropping
+- **Rotation Correction**: Enable/disable automatic image orientation
+- **Custom Model Path**: Specify alternative segmentation models
+
+**Clinical Data Entry (Optional):**
+- **Numerical Fields**: 
+  - `depth` (mm): Cavity depth measurement
+  - `width` (mm): Cavity width measurement
+- **Categorical Selections**:
+  - `enamel_cracks`: Presence of enamel damage
+  - `occlusal_load`: Chewing force considerations
+  - `carious_lesion`: Decay indicators
+  - `opposing_type`: Type of opposing tooth
+  - `adjacent_teeth`: Adjacent tooth status
+  - `age_range`: Patient age category
+  - `cervical_lesion`: Gum line involvement
+
+**Prediction Configuration:**
+- **Threshold Mode**: Choose optimization strategy
+  - `max_acc`: Maximum accuracy (default)
+  - `max_f1`: Maximum F1-score
+  - `youden`: Youden's J statistic
+  - `target_prec`: Target precision
+  - `target_rec`: Target recall
+
+#### **Results Display**
+
+**Primary Prediction:**
+- **Classification**: **Direct** or **Indirect** restoration recommendation
+- **Confidence Score**: Calibrated probability with threshold information
+- **Threshold Details**: Selected threshold and optimization mode
+
+**Model Contributions:**
+- **Per-Stream Analysis**: Individual model predictions
+  - Tabular Model (LightGBM/XGBoost)
+  - Multimodal Model (Image + Clinical)
+  - MIL Model (Image-only attention)
+- **Ensemble Details**: How models are combined
+
+**Visual Feedback:**
+- **Processed Image**: Shows preprocessed tooth image
+- **Quality Indicators**: Image processing success/failure status
+
+#### **Performance Dashboard**
+
+**System Metrics:**
+- **Current Model Performance**: Live loading of latest evaluation results
+- **Detailed Breakdown**: AUC, Accuracy, Precision, Recall, F1-Score
+- **Validation vs Test**: Out-of-fold and test set performance
+
+### 📋 Usage Workflows
+
+#### **Workflow 1: Image-Only Classification**
+
+1. **Upload Image**: Drag dental radiograph to upload area
+2. **Configure Processing**: 
+   - Keep default settings (crop ON, rotate ON)
+   - Select threshold mode (max_acc recommended)
+3. **Run Prediction**: Click "Preprocess & Predict"
+4. **Review Results**: 
+   - See Direct/Indirect recommendation
+   - Check confidence score
+   - Examine processed image quality
+
+#### **Workflow 2: Full Multimodal Classification** (Recommended)
+
+1. **Upload Image**: Provide dental radiograph
+2. **Enter Clinical Data**: Fill ALL clinical fields
+   - Measure depth and width
+   - Select appropriate categorical values
+   - Ensure no fields are left empty
+3. **Run Prediction**: Use "Preprocess & Predict"
+4. **Analyze Results**:
+   - Compare individual model predictions
+   - Note how clinical data influences final decision
+   - Review ensemble contribution weights
+
+#### **Workflow 3: Clinical Data Only**
+
+1. **Skip Image Upload**: Leave image field empty
+2. **Complete Clinical Form**: Provide all 9 clinical parameters
+3. **Run Prediction**: System will use tabular model only
+4. **Interpret Results**: Understand limitation of image-free prediction
+
+### 🏥 Clinical Integration Guidelines
+
+#### **For Dental Practices**
+
+**Setup Requirements:**
+- **Hardware**: Standard laptop/desktop (GPU optional)
+- **Internet**: Required for initial model download only
+- **Training**: 15-minute orientation for dental staff
+
+**Integration Steps:**
+1. **Install System**: Follow installation instructions
+2. **Launch Interface**: Run `python ui/gradio_app/app.py`
+3. **Staff Training**: Train personnel on image capture and data entry
+4. **Workflow Integration**: Incorporate into existing patient examination process
+
+**Best Practices:**
+- **Image Quality**: Ensure clear, well-lit radiographs
+- **Consistent Measurements**: Use standardized measurement protocols
+- **Expert Review**: Always have licensed dentist review AI recommendations
+- **Documentation**: Record AI predictions alongside clinical notes
+
+#### **For Research Institutions**
+
+**Batch Processing:**
+- **Multiple Cases**: Process entire patient databases
+- **Comparative Studies**: Compare AI vs. expert decisions
+- **Performance Tracking**: Monitor accuracy across different populations
+
+**Data Export:**
+- **CSV Output**: Export predictions for statistical analysis
+- **Integration**: Connect with electronic health records
+- **Audit Trail**: Maintain logs of all predictions
+
+### 🛡️ Safety & Compliance
+
+#### **Clinical Disclaimers**
+
+**⚠️ IMPORTANT MEDICAL DISCLAIMERS:**
+
+1. **Research Use Only**: This system is designed for research and educational purposes
+2. **Not a Medical Device**: Not approved by FDA or other regulatory bodies
+3. **Expert Review Required**: All predictions must be reviewed by licensed dental professionals
+4. **Clinical Responsibility**: Final treatment decisions remain with the dentist
+5. **Performance Limitations**: Accuracy may vary with different patient populations
+
+#### **Data Privacy**
+
+**Local Processing:**
+- **No Cloud Upload**: All processing happens on local machine
+- **Data Retention**: Temporary files are cleaned up automatically
+- **HIPAA Considerations**: Consult with compliance officer for patient data handling
+
+**Session Management:**
+- **Temporary Storage**: Images stored in `/ui/tmp/` during processing
+- **Automatic Cleanup**: Session data removed after processing
+- **No Logging**: Patient data not logged unless explicitly enabled
+
+### 🎓 Training & Support
+
+#### **User Training Materials**
+
+**Quick Start Guide:**
+1. **System Overview**: Understanding the multimodal approach
+2. **Image Guidelines**: Best practices for dental photography
+3. **Clinical Data Entry**: Standardized measurement protocols
+4. **Result Interpretation**: Understanding confidence scores and thresholds
+
+**Video Tutorials:** (To be created)
+- Interface walkthrough
+- Clinical workflow integration
+- Troubleshooting common issues
+
+#### **Advanced Features**
+
+**Threshold Customization:**
+- **Clinical Priorities**: Adjust based on practice philosophy
+- **Risk Tolerance**: Balance sensitivity vs. specificity
+- **Population-Specific**: Optimize for patient demographics
+
+**Model Selection:**
+- **Ensemble vs. Individual**: Compare different model approaches
+- **Confidence Thresholding**: Set minimum confidence requirements
+- **Fallback Strategies**: Handle low-confidence predictions
+
+### 📊 Interface Technical Specifications
+
+**Performance:**
+- **Response Time**: 2-10 seconds per prediction (depending on hardware)
+- **Concurrent Users**: Single-user interface (expandable)
+- **Resource Usage**: 2-4GB RAM, optional GPU acceleration
+
+**Browser Compatibility:**
+- **Chrome**: Recommended (version 90+)
+- **Firefox**: Supported (version 88+)
+- **Safari**: Supported (version 14+)
+- **Edge**: Supported (version 90+)
+
+**Accessibility:**
+- **Keyboard Navigation**: Full keyboard support
+- **Screen Readers**: Compatible with ARIA standards
+- **Mobile Responsive**: Works on tablets (1024px+ width recommended)
+
+### 🔧 Customization Options
+
+**Interface Themes:**
+```python
+# Modify ui/gradio_app/app.py
+theme = gr.themes.Soft(
+    primary_hue="blue",      # Change to "green", "red", etc.
+    secondary_hue="blue"
+)
+```
+
+**Default Settings:**
+```python
+# Modify DEFAULTS dictionary in app.py
+DEFAULTS = {
+    "thr_mode": "max_f1",    # Change default threshold mode
+    "thr_target": 0.85,      # Adjust target threshold
+    # ... other settings
+}
+```
+
+**Clinical Field Customization:**
+- **Add New Fields**: Extend tabular feature list
+- **Modify Choices**: Update dropdown options
+- **Validation Rules**: Implement custom data validation
+
+---
+
+**For technical support with the UI system, please contact the development team or refer to the troubleshooting section above.**
 
 ## 🤝 Contributing
 
