@@ -45,6 +45,47 @@ DEFAULTS = {
     "tab_ckpt_dir": REPO_ROOT / "weights" / "tab_v1",
 }
 
+# --- Define choices for UI dropdowns ---
+# Maps user-friendly labels to the numeric values the model expects.
+CHOICES_MAP = {
+    "depth": [
+        ("≤ 4mm (Shallow)", 0),
+        ("> 4mm (Deep)", 1),
+    ],
+    "width": [
+        ("< 1mm (Thin wall)", 0),
+        ("≥ 1mm (Thick wall)", 1),
+    ],
+    "yes_no": [
+        ("No / Absent", 0),
+        ("Yes / Present", 1),
+    ],
+    "carious_lesion": [
+        ("Low Risk", -1),
+        ("Moderate Risk", 0),
+        ("High Risk", 1),
+    ],
+    "opposing_type": [
+        ("Natural Tooth", 0),
+        ("Missing / None", 1),
+        ("Fixed Partial Denture (FPD)", 2),
+        ("Implant", 3),
+    ],
+    "adjacent_teeth": [
+        ("Present on one side", 0),
+        ("Present on both sides", 1),
+    ],
+    "age_range": [
+        ("< 20 years", 0),
+        ("≥ 20 years", 1),
+    ],
+}
+# Assign specific maps to each feature
+CHOICES_MAP["enamel_cracks"] = CHOICES_MAP["yes_no"]
+CHOICES_MAP["occlusal_load"] = CHOICES_MAP["yes_no"]
+CHOICES_MAP["cervical_lesion"] = CHOICES_MAP["yes_no"]
+
+
 # Tabular feature definitions (kept here since tab_model no longer exports them)
 CONT_FEATURES = ["depth", "width"]
 CAT_FEATURES = [
@@ -407,8 +448,8 @@ with gr.Blocks(theme=theme, css=BLUE_CSS, title="Dental Restoration Classifier")
             img_in = gr.Image(type="pil", label="Tooth image (≥ 512×512)")
 
             gr.Markdown("### Preprocessing options")
-            no_crop = gr.Checkbox(label="--no_crop", value=True)
-            no_rotate = gr.Checkbox(label="--no_rotate", value=True)
+            no_crop = gr.Checkbox(label="--no_crop", value=False)
+            no_rotate = gr.Checkbox(label="--no_rotate", value=False)
             seg_model_path = gr.Textbox(
                 label="Segmentation model path",
                 value=str(DEFAULTS["segmenter_model"]),
@@ -417,19 +458,20 @@ with gr.Blocks(theme=theme, css=BLUE_CSS, title="Dental Restoration Classifier")
 
             gr.Markdown("### Clinical / Tabular Fields (optional — but **all-or-none**)")
             # Continuous
-            depth = gr.Number(label="depth (mm)")
-            width = gr.Number(label="width (mm)")
-            # Categoricals: choices read from your sheet
-            enamel_cracks = gr.Dropdown(choices=FEATURE_CHOICES.get('enamel_cracks', []), label="enamel_cracks", value=None)
-            occlusal_load = gr.Dropdown(choices=FEATURE_CHOICES.get('occlusal_load', []), label="occlusal_load", value=None)
-            carious_lesion = gr.Dropdown(choices=FEATURE_CHOICES.get('carious_lesion', []), label="carious_lesion", value=None)
-            opposing_type = gr.Dropdown(choices=FEATURE_CHOICES.get('opposing_type', []), label="opposing_type", value=None)
-            adjacent_teeth = gr.Dropdown(choices=FEATURE_CHOICES.get('adjacent_teeth', []), label="adjacent_teeth", value=None)
-            age_range = gr.Dropdown(choices=FEATURE_CHOICES.get('age_range', []), label="age_range", value=None)
-            cervical_lesion = gr.Dropdown(choices=FEATURE_CHOICES.get('cervical_lesion', []), label="cervical_lesion", value=None)
+            depth = gr.Dropdown(choices=CHOICES_MAP["depth"], label="Cavity Depth", value=None)
+            width = gr.Dropdown(choices=CHOICES_MAP["width"], label="Remaining Wall Width", value=None)
+            # Categoricals: choices are now descriptive text mapped to numbers
+            enamel_cracks = gr.Dropdown(choices=CHOICES_MAP["enamel_cracks"], label="Enamel Cracks", value=None)
+            occlusal_load = gr.Dropdown(choices=CHOICES_MAP["occlusal_load"], label="Occlusal Load", value=None)
+            carious_lesion = gr.Dropdown(choices=CHOICES_MAP["carious_lesion"], label="Carious Lesion Risk", value=None)
+            opposing_type = gr.Dropdown(choices=CHOICES_MAP["opposing_type"], label="Opposing Arch", value=None)
+            adjacent_teeth = gr.Dropdown(choices=CHOICES_MAP["adjacent_teeth"], label="Adjacent Teeth", value=None)
+            age_range = gr.Dropdown(choices=CHOICES_MAP["age_range"], label="Age Range", value=None)
+            cervical_lesion = gr.Dropdown(choices=CHOICES_MAP["cervical_lesion"], label="Cervical Lesion", value=None)
 
             threshold_mode = gr.Dropdown(
                 choices=["max_acc","max_f1","youden","target_prec","target_rec"],
+
                 value=DEFAULTS["thr_mode"], label="Threshold mode"
             )
 
