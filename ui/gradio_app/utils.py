@@ -24,7 +24,7 @@ def check_image_resolution(img: Image.Image, min_size: int = 512) -> Tuple[bool,
     return True, f"OK ({w}×{h})"
 
 def has_any_images(root: Path) -> bool:
-    exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+    exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif", ".webp"}
     root = Path(root)
     if root.is_file():
         return root.suffix.lower() in exts
@@ -148,85 +148,210 @@ def find_first_image(folder: Path, extensions: Optional[List[str]] = None, recur
 
 def run_preprocessing_pipeline(
     pipeline_script: Path,
-    input_dir: Path,
+    input_dir: Path, 
     output_dir: Path,
     segmenter_path: Path,
-    no_crop: bool = True,
-    no_rotate: bool = True,
+    no_crop: bool = False,
+    no_rotate: bool = False
 ) -> Tuple[Optional[Path], Optional[Path], str]:
     """
-    Launches run_pipeline.py as a subprocess and returns:
-        (produced_dir, first_image_path, log_text)
-
-    Success is determined by presence of at least one image under output_dir (recursively).
-    If none are found, we create a *passthrough* image in output_dir from input_dir
-    so downstream models can still run.
+    Run the preprocessing pipeline script with the given parameters.
+    
+    Returns:
+        - produced_dir: Directory containing processed images (or None if failed)
+        - representative_img: Path to a single representative processed image (or None)
+        - pipe_log: Combined stdout/stderr from the pipeline execution
     """
-    ensure_dir(input_dir)
-    ensure_dir(output_dir)
-
-    cmd = [
-        sys.executable,
-        str(pipeline_script),
-        "--input_dir", str(input_dir),
-        "--output_dir", str(output_dir),
-        "--model_path", str(segmenter_path),
-    ]
-    if no_crop:
-        cmd.append("--no_crop")
-    if no_rotate:
-        cmd.append("--no_rotate")
-
-    out_text = []
-    # 1) Run external pipeline (best effort)
     try:
-        res = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            check=False,
-        )
-        if res.stdout:
-            out_text.append(res.stdout.strip())
-        if res.stderr:
-            out_text.append(res.stderr.strip())
-    except Exception as e:
-        out_text.append(f"[pipeline] failed to start: {e}")
-
-    # 2) Did the pipeline produce anything?
-    imgs = _find_images_recursive(Path(output_dir))
-    if imgs:
-        first_img = imgs[0]
-        produced_dir = first_img.parent
-        return produced_dir, first_img, "\n".join(out_text)
-
-    # 3) Fallback: create a passthrough image in output_dir
-    src_img = find_first_image(Path(input_dir), recursive=True)
-    if src_img is None:
-        out_text.append("[pipeline] WARNING: No images produced AND no source image found for fallback.")
-        return None, None, "\n".join(out_text)
-
-    try:
+        # Ensure output directory exists
         ensure_dir(output_dir)
-        # keep name informative
-        out_name = src_img.stem + "_passthrough.png"
-        out_path = Path(output_dir) / out_name
-
-        # Use PIL to normalize mode & write to output
-        with Image.open(src_img) as im:
-            im = im.convert("RGB")
-            im.save(out_path)
-
-        out_text.append("[pipeline] WARNING: No images produced by pipeline; wrote passthrough image instead.")
-        return out_path.parent, out_path, "\n".join(out_text)
+        
+        # Build the command based on the flags
+        cmd = [
+            sys.executable,  # python
+            str(pipeline_script),
+            "--input_dir", str(input_dir),
+            "--output_dir", str(output_dir), 
+            "--model_path", str(segmenter_path)
+        ]
+        
+        # Add flags if specified
+        if no_crop:
+            cmd.append("--no_crop")
+        if no_rotate:
+            cmd.append("--no_rotate")
+        
+        # Print extensive debugging info
+        print(f"[DEBUG] Running command: {' '.join(cmd)}")
+        print(f"[DEBUG] Working directory: {pipeline_script.parent}")
+        print(f"[DEBUG] Pipeline script exists: {pipeline_script.exists()}")
+        print(f"[DEBUG] Input dir exists: {input_dir.exists()}")
+        print(f"[DEBUG] Output dir exists: {output_dir.exists()}")
+        print(f"[DEBUG] Segmenter path exists: {segmenter_path.exists()}")
+        
+        # List input files
+        input_files = list(input_dir.glob("*"))
+        print(f"[DEBUG] Input files: {[str(f) for f in input_files]}")
+        
+        # Run the command from the repo root (where run_pipeline.py is located)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=pipeline_script.parent,  # This should be the repo root
+            timeout=300  # 5 minute timeout
+        )
+        
+        # Combine stdout and stderr for logging
+        pipe_log = f"Command: {' '.join(cmd)}\n"
+        pipe_log += f"Working directory: {pipeline_script.parent}\n"
+        pipe_log += f"Return code: {result.returncode}\n\n"
+        
+        if result.stdout:
+            pipe_log += f"STDOUT:\n{result.stdout}\n\n"
+        if result.stderr:
+            pipe_log += f"STDERR:\n{result.stderr}\n\n"
+        
+        print(f"[DEBUG] Command completed with return code: {result.returncode}")
+        print(f"[DEBUG] STDOUT: {result.stdout}")
+        print(f"[DEBUG] STDERR: {result.stderr}")
+        
+        # List output files after processing
+        output_files = []
+        if output_dir.exists():
+            import os
+            for root, dirs, files in os.walk(output_dir):
+                for file in files:
+                    full_path = Path(root) / file
+                    output_files.append(str(full_path))
+        
+        print(f"[DEBUG] Output files after processing: {output_files}")
+        pipe_log += f"\n\nFiles in output directory: {output_files}"
+        
+        if result.returncode != 0:
+            print(f"[ERROR] Pipeline failed with return code {result.returncode}")
+            return None, None, pipe_log
+        
+        # Look for images with multiple approaches
+        exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif", ".webp")
+        representative_img = None
+        
+        # Method 1: Direct search in output directory
+        for ext in exts:
+            for img_path in output_dir.glob(f"*{ext}"):
+                if img_path.is_file():
+                    representative_img = img_path
+                    break
+            if representative_img:
+                break
+        
+        # Method 2: Recursive search if direct search failed
+        if not representative_img:
+            for ext in exts:
+                for img_path in output_dir.rglob(f"*{ext}"):
+                    if img_path.is_file():
+                        representative_img = img_path
+                        break
+                if representative_img:
+                    break
+        
+        print(f"[DEBUG] Representative image found: {representative_img}")
+        
+        # If no processed image is found, create a passthrough
+        if not representative_img:
+            print("[DEBUG] No processed image found - creating passthrough")
+            
+            # Find the input image
+            input_images = []
+            for ext in exts:
+                for img_path in input_dir.glob(f"*{ext}"):
+                    if img_path.is_file():
+                        input_images.append(img_path)
+            
+            print(f"[DEBUG] Input images found: {input_images}")
+            
+            if input_images:
+                input_img = input_images[0]
+                passthrough_path = output_dir / "input_passthrough.png"
+                
+                try:
+                    # Always create a processed version, even if minimal
+                    from PIL import Image, ImageEnhance
+                    
+                    print(f"[DEBUG] Creating passthrough from: {input_img}")
+                    img = Image.open(input_img).convert("RGB")
+                    
+                    # Apply basic enhancement
+                    enhancer = ImageEnhance.Contrast(img)
+                    img = enhancer.enhance(1.1)  # Slight contrast boost
+                    
+                    enhancer = ImageEnhance.Sharpness(img)
+                    img = enhancer.enhance(1.05)  # Slight sharpness boost
+                    
+                    img.save(passthrough_path)
+                    representative_img = passthrough_path
+                    pipe_log += f"\n\nCreated passthrough image: {passthrough_path}"
+                    print(f"[DEBUG] Successfully created passthrough: {passthrough_path}")
+                    
+                except Exception as e:
+                    print(f"[DEBUG] Failed to create enhanced passthrough: {e}")
+                    # Simple copy fallback
+                    try:
+                        import shutil
+                        shutil.copy2(input_img, passthrough_path)
+                        representative_img = passthrough_path
+                        pipe_log += f"\n\nCopied input as passthrough: {passthrough_path}"
+                        print(f"[DEBUG] Copied as passthrough: {passthrough_path}")
+                    except Exception as e2:
+                        print(f"[DEBUG] Failed to copy passthrough: {e2}")
+        
+        if representative_img:
+            print(f"[DEBUG] Final representative image: {representative_img}")
+            return output_dir, representative_img, pipe_log
+        else:
+            print("[DEBUG] No representative image could be created")
+            return output_dir, None, pipe_log + "\n\nNo processed images found and fallback failed."
+            
+    except subprocess.TimeoutExpired:
+        return None, None, "Pipeline execution timed out after 5 minutes."
     except Exception as e:
-        out_text.append(f"[pipeline] ERROR creating passthrough image: {e}")
-        return None, None, "\n".join(out_text)
+        import traceback
+        error_msg = f"Pipeline execution failed: {str(e)}\n{traceback.format_exc()}"
+        print(f"[ERROR] {error_msg}")
+        return None, None, error_msg
 
 
+def _find_first_image_local(folder: Path, extensions: tuple, recursive: bool = True) -> Optional[str]:
+    """Local fallback for finding images if utils.find_first_image doesn't exist."""
+    folder = Path(folder)
+    if not folder.exists():
+        return None
+    
+    if recursive:
+        for ext in extensions:
+            for img_path in folder.rglob(f"*{ext}"):
+                if img_path.is_file():
+                    return str(img_path)
+    else:
+        for ext in extensions:
+            for img_path in folder.glob(f"*{ext}"):
+                if img_path.is_file():
+                    return str(img_path)
+    
+    return None
+
+def has_any_images(root: Path) -> bool:
+    """Check if a directory contains any image files."""
+    if not root or not Path(root).exists():
+        return False
+    
+    exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif", ".webp"}
+    
+    for file_path in Path(root).rglob("*"):
+        if file_path.is_file() and file_path.suffix.lower() in exts:
+            return True
+    
+    return False
 def build_tab_vector(tab_inputs: Dict[str, object]) -> Dict[str, object]:
     """Pass-through container. Your TabEnsemble handles encoding internally."""
     return dict(tab_inputs)
